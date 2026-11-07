@@ -164,8 +164,13 @@ fn parent_dir(path: &Path) -> &Path {
     }
 }
 
-/// Create the directory if needed. On Unix it is made private (0700).
+/// Create the directory if it does not exist. A directory created here is made private
+/// (0700, the leaf only). An existing directory keeps its mode: it may belong to something
+/// else, such as the home directory when the file name has no directory part.
 fn create_private_dir(dir: &Path) -> io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
     fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
@@ -175,10 +180,17 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Write the file with a fresh inode and, on Unix, mode 0600 from the start.
+/// Write the file as a new inode with, on Unix, mode 0600 from the start. A leftover file
+/// with the same name is removed first, so its old mode cannot carry over, and `create_new`
+/// refuses to follow a symlink planted at that name.
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -312,5 +324,40 @@ mod tests {
         let text = format!("{:?}", TokenFile::new("/x/token.json"));
         assert!(text.contains("token.json"));
         assert!(!text.contains("tok-"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_directory_keeps_its_mode() {
+        // A token file in a directory we did not create (for example the home directory
+        // for a bare file name) must not change that directory's permissions.
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("existing-mode");
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
+        TokenFile::new(d.join("token.json"))
+            .save(&endpoint("192.0.2.1"), "admin", &token())
+            .unwrap();
+        let mode = fs::metadata(&d).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_temp_file_does_not_keep_its_mode() {
+        // A leftover temp file with the same name (same process id) and mode 0644 must not
+        // become the token file with those permissions.
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir("stale-tmp");
+        let path = d.join("token.json");
+        let stale = d.join(format!(".token.json.tmp-{}", std::process::id()));
+        fs::write(&stale, b"old").unwrap();
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o644)).unwrap();
+        TokenFile::new(&path)
+            .save(&endpoint("192.0.2.1"), "admin", &token())
+            .unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        fs::remove_dir_all(d).unwrap();
     }
 }
