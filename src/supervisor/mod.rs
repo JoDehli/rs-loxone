@@ -24,6 +24,22 @@ use outbox::{Item, Outbox, Queued};
 
 /// Close codes after which reconnecting cannot succeed: 4003 (user blocked after too many
 /// failed logins; every retry can extend the block) and 4006 (user disabled or changed).
+/// True if a failed login may have been caused by the token that was offered. The Miniserver
+/// refuses a bad token by dropping the socket or by not answering, or by a refusal. Network
+/// and TLS errors say nothing about the token.
+fn token_may_be_the_cause(err: &SessionError) -> bool {
+    use crate::transport::TransportError;
+    matches!(
+        err,
+        SessionError::Rejected { .. }
+            | SessionError::Closed
+            | SessionError::Timeout
+            | SessionError::Transport(
+                TransportError::Closed { .. } | TransportError::ConnectionLost { .. }
+            )
+    )
+}
+
 const FATAL_CLOSE_CODES: [u16; 2] = [4003, 4006];
 
 /// The supervisor has stopped and takes no more commands.
@@ -190,10 +206,10 @@ impl Runner {
                     return;
                 }
                 Err(err) => {
-                    // The login failed. If it had a stored token, the token may be the reason (the
-                    // Miniserver can drop the socket instead of answering), so the next attempt
-                    // uses the password. Otherwise every retry would present the same token.
-                    if offered_token {
+                    // The login failed. If it had a stored token and the failure may come from the
+                    // token, the next attempt uses the password. Otherwise every retry would present
+                    // the same token. A network error does not switch: it would only cost a new token.
+                    if offered_token && token_may_be_the_cause(&err) {
                         self.force_password = true;
                     }
                     let long = matches!(
@@ -430,5 +446,41 @@ mod tests {
         };
         assert_eq!(handle.send(Item::Command("a".into())), Ok(1));
         assert_eq!(handle.send(Item::Command("b".into())), Ok(2));
+    }
+}
+
+#[cfg(test)]
+mod token_cause_tests {
+    use super::*;
+    use crate::transport::TransportError;
+
+    #[test]
+    fn only_failures_that_can_come_from_the_token_switch_to_the_password() {
+        // The Miniserver drops the socket or does not answer a refused token.
+        assert!(token_may_be_the_cause(&SessionError::Closed));
+        assert!(token_may_be_the_cause(&SessionError::Timeout));
+        assert!(token_may_be_the_cause(&SessionError::Transport(
+            TransportError::Closed {
+                code: Some(1000),
+                reason: String::new(),
+            }
+        )));
+        assert!(token_may_be_the_cause(&SessionError::Transport(
+            TransportError::ConnectionLost {
+                reason: "reset".into(),
+            }
+        )));
+        // Network and TLS problems say nothing about the token: the password is kept.
+        assert!(!token_may_be_the_cause(&SessionError::Transport(
+            TransportError::Unreachable("192.0.2.1:80".into())
+        )));
+        assert!(!token_may_be_the_cause(&SessionError::Transport(
+            TransportError::Timeout("websocket open".into())
+        )));
+        assert!(!token_may_be_the_cause(&SessionError::Transport(
+            TransportError::Tls("bad certificate".into())
+        )));
+        assert!(!token_may_be_the_cause(&SessionError::OutOfService));
+        assert!(!token_may_be_the_cause(&SessionError::NoEventSlots));
     }
 }
