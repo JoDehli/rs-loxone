@@ -172,7 +172,15 @@ impl Runner {
                     return;
                 }
                 Err(err) => {
-                    if self.wait_before_retry(err.to_string()).await.is_break() {
+                    let long = matches!(
+                        err,
+                        SessionError::Rejected { code, .. } if backoff::is_long_wait_code(code)
+                    );
+                    if self
+                        .wait_before_retry(err.to_string(), long)
+                        .await
+                        .is_break()
+                    {
                         return;
                     }
                     continue;
@@ -207,7 +215,7 @@ impl Runner {
                     }
                     self.force_password = true;
                     if self
-                        .wait_before_retry("token renewal failed".into())
+                        .wait_before_retry("token renewal failed".into(), false)
                         .await
                         .is_break()
                     {
@@ -215,8 +223,12 @@ impl Runner {
                     }
                 }
                 Served::Ended(reason) => {
+                    let long = matches!(
+                        reason,
+                        DisconnectReason::Closed(Some(code)) if backoff::is_long_wait_code(i64::from(code))
+                    );
                     if self
-                        .wait_before_retry(format!("connection ended: {reason:?}"))
+                        .wait_before_retry(format!("connection ended: {reason:?}"), long)
                         .await
                         .is_break()
                     {
@@ -293,9 +305,9 @@ impl Runner {
 
     /// Count a failure, tell the caller, and wait. Commands that arrive while waiting are
     /// queued. Breaks if the caller closes during the wait.
-    async fn wait_before_retry(&mut self, reason: String) -> ControlFlow<()> {
+    async fn wait_before_retry(&mut self, reason: String, long: bool) -> ControlFlow<()> {
         self.failed += 1;
-        let wait = backoff::delay(self.failed - 1, jitter_unit());
+        let wait = backoff::delay_for(self.failed - 1, long, jitter_unit());
         self.emit(Event::Reconnecting {
             attempt: self.failed,
             wait,
