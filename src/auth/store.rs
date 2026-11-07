@@ -124,6 +124,13 @@ impl TokenStore {
     pub fn save(&self, token: &TokenState) {
         let _ = self.file.save(&self.endpoint, &self.user, token);
     }
+
+    /// The same as [`TokenStore::save`], but the file I/O runs on a blocking thread, so an
+    /// async caller does not hold up the runtime (fsync can be slow on a network disk).
+    pub async fn save_off_thread(&self, token: TokenState) {
+        let store = self.clone();
+        let _ = tokio::task::spawn_blocking(move || store.save(&token)).await;
+    }
 }
 
 /// Write `bytes` to `path` atomically: a temporary file in the same directory, then a

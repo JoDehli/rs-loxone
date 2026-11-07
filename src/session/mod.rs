@@ -240,7 +240,7 @@ impl Session {
             .clone()
             .map(|file| TokenStore::new(file, cfg.endpoint.clone(), cfg.username.clone()));
         if let Some(store) = &store {
-            store.save(&login.token);
+            store.save_off_thread(login.token.clone()).await;
         }
         let token = Arc::new(std::sync::Mutex::new(login.token));
 

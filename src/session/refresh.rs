@@ -125,7 +125,7 @@ pub(crate) async fn run(
                     *current = new.clone();
                 }
                 if let Some(store) = &store {
-                    store.save(&new);
+                    store.save_off_thread(new.clone()).await;
                 }
                 shared.emit(Event::TokenChanged(new.clone()));
                 wait = new.refresh_delay(now_loxone());
