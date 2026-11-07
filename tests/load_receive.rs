@@ -5,7 +5,11 @@
 //!
 //! Run:  cargo test --release --features mock --test load_receive -- --ignored --nocapture
 //!
+//! To keep the flood server out of the measurement, run it in a separate process (see
+//! examples/flood_server.rs) and set LOAD_ADDR to its address.
+//!
 //! Settings (environment variables):
+//!   LOAD_ADDR          address of an external flood server (optional)
 //!   FLOOD_RECORDS      records to send (default 1000000)
 //!   FLOOD_PER_TABLE    records per value-state table, one event each (default 1000)
 //!   FLOOD_CALLBACK_US  microseconds the callback sleeps per table, to simulate a slow
@@ -49,10 +53,18 @@ async fn receive_flood_without_loss() {
     let per_table = env_u64("FLOOD_PER_TABLE", 1000) as usize;
     let callback_us = env_u64("FLOOD_CALLBACK_US", 0);
 
-    let mock = start(MockConfig {
-        flood: Some(Flood { records, per_table }),
-        ..MockConfig::default()
-    });
+    // With LOAD_ADDR set, the flood comes from a separate process (examples/flood_server),
+    // so the mock does not share the CPU with the receiver. Otherwise the mock runs here.
+    let (addr, _mock) = match std::env::var("LOAD_ADDR") {
+        Ok(addr) => (addr, None),
+        Err(_) => {
+            let mock = start(MockConfig {
+                flood: Some(Flood { records, per_table }),
+                ..MockConfig::default()
+            });
+            (mock.addr().to_string(), Some(mock))
+        }
+    };
     let stats = Arc::new(Mutex::new(Stats::default()));
     let for_callback = stats.clone();
     let handler = AsyncHandler(move |event: Event| {
@@ -83,7 +95,7 @@ async fn receive_flood_without_loss() {
     });
 
     let cfg = SessionConfig::new(
-        Endpoint::parse(&format!("http://{}", mock.addr())).unwrap(),
+        Endpoint::parse(&format!("http://{addr}")).unwrap(),
         "admin",
         Secret::new("s3cret"),
     );
