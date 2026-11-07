@@ -85,8 +85,9 @@ async fn choose_address() -> String {
     }
 }
 
-/// Numbers without noise: `1013`, `3.5`, `0.3333`.
-/// `LOX_TLS_PIN`: the SHA-256 of the Miniserver's certificate (DER), as 64 hex digits.
+/// TLS options from the environment. `LOX_TLS_PIN`: the SHA-256 of the Miniserver's
+/// certificate (DER), as 64 hex digits. `LOX_TLS_TOFU=<file>`: trust on first use, remembered
+/// in that file.
 fn tls_from_env() -> Result<TlsOptions, String> {
     let Some(hex) = std::env::var_os("LOX_TLS_PIN") else {
         return Ok(match std::env::var_os("LOX_TLS_TOFU") {
@@ -118,6 +119,7 @@ fn tls_from_env() -> Result<TlsOptions, String> {
     })
 }
 
+/// Numbers without noise: `1013`, `3.5`, `0.3333`.
 fn format_value(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{value:.0}")

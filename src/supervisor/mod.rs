@@ -191,14 +191,15 @@ impl Runner {
             let offered_token = cfg.token.is_some();
             let session = match Session::connect(cfg, forward).await {
                 Ok(session) => session,
-                // The Miniserver refused the login. Retrying would only repeat the refusal.
-                // The Miniserver is not local and the caller asked for a local one.
+                // The Miniserver is not local and the caller asked for a local one. Retrying
+                // would only repeat that.
                 Err(SessionError::NotLocal) => {
                     self.emit(Event::GaveUp {
                         reason: "the Miniserver sees this connection as remote".into(),
                     });
                     return;
                 }
+                // The Miniserver refused the login. Retrying would only repeat the refusal.
                 Err(SessionError::Rejected { .. }) => {
                     self.emit(Event::GaveUp {
                         reason: "the Miniserver refused the login".into(),
