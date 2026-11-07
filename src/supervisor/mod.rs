@@ -176,6 +176,13 @@ impl Runner {
             let session = match Session::connect(cfg, forward).await {
                 Ok(session) => session,
                 // The Miniserver refused the login. Retrying would only repeat the refusal.
+                // The Miniserver is not local and the caller asked for a local one.
+                Err(SessionError::NotLocal) => {
+                    self.emit(Event::GaveUp {
+                        reason: "the Miniserver sees this connection as remote".into(),
+                    });
+                    return;
+                }
                 Err(SessionError::Rejected { .. }) => {
                     self.emit(Event::GaveUp {
                         reason: "the Miniserver refused the login".into(),
@@ -192,7 +199,7 @@ impl Runner {
                     let long = matches!(
                         err,
                         SessionError::Rejected { code, .. } if backoff::is_long_wait_code(code)
-                    );
+                    ) || matches!(err, SessionError::NoEventSlots);
                     if self
                         .wait_before_retry(err.to_string(), long)
                         .await

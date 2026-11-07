@@ -66,6 +66,8 @@ pub struct SessionConfig {
     pub max_command_age: Duration,
     /// How token renewal is retried and when it gives up.
     pub refresh: RefreshPolicy,
+    /// Refuse to connect if the Miniserver does not see this connection as local.
+    pub local_only: bool,
     /// File that keeps the token between runs, if any (see [`crate::auth::store::TokenFile`]).
     pub token_file: Option<crate::auth::store::TokenFile>,
 }
@@ -83,6 +85,7 @@ impl SessionConfig {
             retry: RetryPolicy::default(),
             max_command_age: DEFAULT_MAX_COMMAND_AGE,
             refresh: RefreshPolicy::default(),
+            local_only: false,
             token_file: None,
         }
     }
@@ -100,6 +103,12 @@ pub enum SessionError {
     /// A protocol error (frames, envelopes).
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
+    /// Preflight: the Miniserver has no free event slot for state updates right now.
+    #[error("the Miniserver has no free event slot")]
+    NoEventSlots,
+    /// Preflight: `local_only` is set and the Miniserver sees this connection as remote.
+    #[error("the connection is not local, and local_only is set")]
+    NotLocal,
     /// The Miniserver answered with a non-success code.
     #[error("rejected with code {code} ({class:?})")]
     Rejected { code: i64, class: ReplyClass },
@@ -182,6 +191,15 @@ impl Session {
             connect_addr: cfg.connect_addr,
         })?;
         let info = http.api_key().await?;
+        // Preflight. A probe that fails is no verdict: the WebSocket attempt still runs.
+        if cfg.local_only && info.local == Some(false) {
+            return Err(SessionError::NotLocal);
+        }
+        if let Ok(api) = http.api_config().await
+            && api.has_event_slots == Some(false)
+        {
+            return Err(SessionError::NoEventSlots);
+        }
         let pem = http.public_key_pem().await?;
 
         let ws_opts = WsOptions {

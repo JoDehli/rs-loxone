@@ -21,6 +21,8 @@ use crate::protocol::version::parse_version;
 
 /// Path of the API key and version endpoint.
 pub const API_KEY_PATH: &str = "/jdev/cfg/apiKey";
+/// `GET`: event slots and local flag, same quoted-JSON format as `apiKey`.
+pub const API_CONFIG_PATH: &str = "/jdev/cfg/api";
 /// Path of the structure file.
 pub const STRUCTURE_PATH: &str = "/data/LoxAPP3.json";
 /// Path of the Miniserver certificate.
@@ -47,6 +49,15 @@ pub struct BootstrapConfig {
     /// used for SNI and certificate checks. This is how a CloudDNS hostname reaches
     /// a Miniserver on the local IP (see `tls::cloud_dns_host`).
     pub connect_addr: Option<std::net::SocketAddr>,
+}
+
+/// The `jdev/cfg/api` reply, as far as the preflight uses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApiConfigInfo {
+    /// `hasEventSlots`: false means no state subscription can be added right now.
+    pub has_event_slots: Option<bool>,
+    /// `local`: whether the Miniserver regards this connection as local.
+    pub local: Option<bool>,
 }
 
 /// The `apiKey` reply.
@@ -106,6 +117,25 @@ impl HttpBootstrap {
     /// `GET /jdev/cfg/apiKey`: version, MAC, `httpsStatus` and `local`.
     pub async fn api_key(&self) -> Result<ApiKeyInfo, TransportError> {
         self.api_key_with(&mut RandJitter).await
+    }
+
+    /// `GET /jdev/cfg/api`: whether the Miniserver has a free event slot (`hasEventSlots`)
+    /// and whether it sees this connection as local. Both are `None` if the field is absent.
+    pub async fn api_config(&self) -> Result<ApiConfigInfo, TransportError> {
+        let (body, _) = self
+            .get_with_retry(API_CONFIG_PATH, &mut RandJitter)
+            .await?;
+        let reply = parse_ll(&body)?;
+        let normalised = reply.value.replace('\'', "\"");
+        let value: Value = serde_json::from_str(&normalised)
+            .map_err(|e| TransportError::Protocol(format!("cfg/api value: {e}")))?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| TransportError::Protocol("cfg/api value is not an object".into()))?;
+        Ok(ApiConfigInfo {
+            has_event_slots: obj.get("hasEventSlots").and_then(Value::as_bool),
+            local: obj.get("local").and_then(Value::as_bool),
+        })
     }
 
     /// `GET /data/LoxAPP3.json`: the structure file, unchanged.

@@ -85,6 +85,10 @@ pub struct MockConfig {
     pub close_on_refused_token: bool,
     /// Commands (inner text, prefix match) that the mock records but never answers.
     pub mute_prefixes: Vec<String>,
+    /// `hasEventSlots` reported by `jdev/cfg/api`.
+    pub event_slots: bool,
+    /// `local` reported by `apiKey` and `jdev/cfg/api`.
+    pub local: bool,
     /// Lifetime of issued tokens, in seconds from now.
     pub token_lifetime_secs: u64,
     /// Answer refreshjwt with 401 (refresh refused).
@@ -108,6 +112,8 @@ impl Default for MockConfig {
             close_first_enables: None,
             close_on_refused_token: false,
             mute_prefixes: vec![],
+            event_slots: true,
+            local: true,
             token_lifetime_secs: 86_400,
             refuse_refresh: false,
             alarm: None,
@@ -346,8 +352,12 @@ fn respond_http<W: Write>(w: &mut W, req: &[u8], cfg: &MockConfig) {
     let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
     let body = match path.as_str() {
         "/jdev/cfg/apiKey" => format!(
-            r#"{{"LL": {{"control": "dev/cfg/apiKey", "code": "200", "value": "{{'version': '{}', 'MAC': '50:4F:94:10:65:15', 'httpsStatus': null, 'local': true}}"}}}}"#,
-            cfg.version
+            r#"{{"LL": {{"control": "dev/cfg/apiKey", "code": "200", "value": "{{'version': '{}', 'MAC': '50:4F:94:10:65:15', 'httpsStatus': null, 'local': {}}}"}}}}"#,
+            cfg.version, cfg.local
+        ),
+        "/jdev/cfg/api" => format!(
+            r#"{{"LL": {{"control": "dev/cfg/api", "code": "200", "value": "{{'version': '{}', 'hasEventSlots': {}, 'isInTrust': false, 'local': {}}}"}}}}"#,
+            cfg.version, cfg.event_slots, cfg.local
         ),
         "/jdev/sys/getPublicKey" => format!(
             r#"{{"LL": {{"control": "dev/sys/getPublicKey", "code": "200", "value": {}}}}}"#,

@@ -72,3 +72,7 @@ path = "tests/live/gen1_smoke.rs"
 [[test]]
 name = "live_token_store"
 path = "tests/live/token_store.rs"
+
+[[test]]
+name = "live_preflight"
+path = "tests/live/preflight.rs"
