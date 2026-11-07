@@ -261,3 +261,63 @@ async fn refused_secured_command_is_reported_without_its_code() {
     }
     handle.close();
 }
+
+#[tokio::test]
+async fn user_disabled_close_gives_up_without_retrying() {
+    // The Miniserver closes every session with 4006 (user disabled or changed).
+    let mock = start(MockConfig {
+        close_after_enable: Some(4006),
+        ..MockConfig::default()
+    });
+    let (_handle, mut rx) = run(config(&mock, PASSWORD));
+
+    let seen = until(&mut rx, |e| matches!(e, Event::GaveUp { .. })).await;
+    assert!(
+        !seen.iter().any(|e| matches!(e, Event::Reconnecting { .. })),
+        "must not retry a disabled user"
+    );
+    assert_eq!(count(&mock, "jdev/sys/getjwt"), 1, "exactly one login");
+}
+
+#[tokio::test]
+async fn blocked_user_close_gives_up_without_retrying() {
+    // The Miniserver closes every session with 4003 (user blocked after failed logins).
+    let mock = start(MockConfig {
+        close_after_enable: Some(4003),
+        ..MockConfig::default()
+    });
+    let (_handle, mut rx) = run(config(&mock, PASSWORD));
+
+    let seen = until(&mut rx, |e| matches!(e, Event::GaveUp { .. })).await;
+    assert!(
+        !seen.iter().any(|e| matches!(e, Event::Reconnecting { .. })),
+        "must not retry a blocked user"
+    );
+    assert_eq!(count(&mock, "jdev/sys/getjwt"), 1, "exactly one login");
+}
+
+#[tokio::test]
+async fn maintenance_close_waits_five_minutes_before_reconnecting() {
+    // The first session is closed with 4007 (Miniserver going down); the next one is fine.
+    let mock = start(MockConfig {
+        close_after_enable: Some(4007),
+        close_first_enables: Some(1),
+        ..MockConfig::default()
+    });
+    let (handle, mut rx) = run(config(&mock, PASSWORD));
+
+    let seen = until(&mut rx, |e| matches!(e, Event::Reconnecting { .. })).await;
+    let wait = seen
+        .iter()
+        .find_map(|e| match e {
+            Event::Reconnecting { wait, .. } => Some(*wait),
+            _ => None,
+        })
+        .expect("a Reconnecting event");
+    // 300 s with ±20 % jitter.
+    assert!(
+        wait >= Duration::from_secs(240) && wait <= Duration::from_secs(360),
+        "wait was {wait:?}"
+    );
+    handle.close();
+}

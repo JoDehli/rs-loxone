@@ -22,6 +22,10 @@ use crate::auth::token::TokenState;
 use crate::session::{DisconnectReason, Event, EventHandler, Session, SessionConfig, SessionError};
 use outbox::{Item, Outbox, Queued};
 
+/// Close codes after which reconnecting cannot succeed: 4003 (user blocked after too many
+/// failed logins; every retry can extend the block) and 4006 (user disabled or changed).
+const FATAL_CLOSE_CODES: [u16; 2] = [4003, 4006];
+
 /// The supervisor has stopped and takes no more commands.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SupervisorError {
@@ -221,6 +225,16 @@ impl Runner {
                     {
                         return;
                     }
+                }
+                // Blocked or disabled user: like the refused login above, retrying would only
+                // repeat the refusal (or extend the block).
+                Served::Ended(DisconnectReason::Closed(Some(code)))
+                    if FATAL_CLOSE_CODES.contains(&code) =>
+                {
+                    self.emit(Event::GaveUp {
+                        reason: format!("the Miniserver closed the connection with code {code}"),
+                    });
+                    return;
                 }
                 Served::Ended(reason) => {
                     let long = matches!(
