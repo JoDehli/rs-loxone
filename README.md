@@ -82,6 +82,24 @@ It prints the received count, missing and out-of-order records, the throughput a
 largest backlog. The mock and the client run on the same machine, so the numbers show
 this machine, not a network or a real Miniserver.
 
+#### Mock in its own process
+
+By default the mock runs inside the test and shares the CPU with the receiver. To
+measure the receiver alone, run the flood server as a separate program and point the
+test at it with `LOAD_ADDR`. Use the same settings for both:
+
+```
+# terminal 1: prints "flood server on <address>"
+FLOOD_PER_TABLE=1 FLOOD_RECORDS=200000 \
+  cargo run --release --features mock --example flood_server
+
+# terminal 2: use the address from terminal 1
+LOAD_ADDR=127.0.0.1:<port> FLOOD_PER_TABLE=1 FLOOD_RECORDS=200000 \
+  cargo test --release --features mock --test load_receive -- --ignored --nocapture
+```
+
+Stop the flood server with Ctrl-C when you are done.
+
 ### Live tests
 
 The tests in `tests/live/` talk to a real Miniserver. They are ignored by default, so
