@@ -77,6 +77,7 @@ pub fn client_config(opts: &TlsOptions) -> Result<Arc<ClientConfig>, TransportEr
             .with_custom_certificate_verifier(Arc::new(FirstUseVerify {
                 provider,
                 file: opts.first_use_file.clone(),
+                pending: std::sync::Mutex::new(None),
             }))
             .with_no_client_auth()
     } else if let Some(pin) = opts.pinned_cert_sha256 {
@@ -227,15 +228,75 @@ impl ServerCertVerifier for PinVerify {
 }
 
 /// Certificates remembered by trust on first use: (server name, SHA-256 of the DER).
-static FIRST_USE_PINS: std::sync::Mutex<Vec<(String, [u8; 32])>> =
-    std::sync::Mutex::new(Vec::new());
+/// Remembered (server name, digest) pairs.
+type Pins = Vec<(String, [u8; 32])>;
+/// A pin found by `verify_server_cert`, not stored yet.
+type Pending = Option<(String, [u8; 32])>;
+
+static FIRST_USE_PINS: std::sync::Mutex<Pins> = std::sync::Mutex::new(Vec::new());
 
 /// Trust on first use. The first certificate for a server name is remembered in
 /// `FIRST_USE_PINS`; later connections to that name must present the same certificate.
 #[derive(Debug)]
 struct FirstUseVerify {
     provider: Arc<CryptoProvider>,
+    /// With a file, the file is the only memory (it is read on every check). Without one,
+    /// the process memory `FIRST_USE_PINS` is used.
     file: Option<std::path::PathBuf>,
+    /// A new (name, digest) from `verify_server_cert`, stored once the handshake signature
+    /// has been checked by `remember_pending`.
+    pending: std::sync::Mutex<Pending>,
+}
+
+impl FirstUseVerify {
+    fn known_pins(&self) -> Result<Pins, rustls::Error> {
+        match &self.file {
+            Some(path) => {
+                let mut pins = Vec::new();
+                merge_first_use_file(&mut pins, path);
+                Ok(pins)
+            }
+            None => Ok(lock_memory()?.clone()),
+        }
+    }
+
+    fn pending_lock(&self) -> Result<std::sync::MutexGuard<'_, Pending>, rustls::Error> {
+        self.pending
+            .lock()
+            .map_err(|_| rustls::Error::General("trust store poisoned".into()))
+    }
+
+    /// Store the pending pin, if there is one. Called only after the handshake signature
+    /// was verified, so a certificate the server cannot prove it holds is never stored.
+    fn remember_pending(&self) -> Result<(), rustls::Error> {
+        let Some((name, digest)) = self.pending_lock()?.take() else {
+            return Ok(());
+        };
+        match &self.file {
+            Some(path) => {
+                let mut pins = Vec::new();
+                merge_first_use_file(&mut pins, path);
+                if !pins.iter().any(|(n, _)| *n == name) {
+                    pins.push((name, digest));
+                    // A write failure only means the pin is not kept across restarts.
+                    let _ = save_first_use_file(&pins, path);
+                }
+            }
+            None => {
+                let mut pins = lock_memory()?;
+                if !pins.iter().any(|(n, _)| *n == name) {
+                    pins.push((name, digest));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn lock_memory() -> Result<std::sync::MutexGuard<'static, Pins>, rustls::Error> {
+    FIRST_USE_PINS
+        .lock()
+        .map_err(|_| rustls::Error::General("trust store poisoned".into()))
 }
 
 /// Read the remembered certificates from `path` and add the names that memory does not
@@ -284,19 +345,12 @@ impl ServerCertVerifier for FirstUseVerify {
         use sha2::{Digest, Sha256};
         let digest: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
         let name = server_name.to_str().to_string();
-        let mut pins = FIRST_USE_PINS
-            .lock()
-            .map_err(|_| rustls::Error::General("trust store poisoned".into()))?;
-        if let Some(path) = &self.file {
-            merge_first_use_file(&mut pins, path);
-        }
-        match pins.iter().find(|(n, _)| *n == name) {
+        let known = self.known_pins()?;
+        *self.pending_lock()? = None;
+        match known.iter().find(|(n, _)| *n == name) {
             None => {
-                pins.push((name, digest));
-                if let Some(path) = &self.file {
-                    // A write failure only means the pin is not kept across restarts.
-                    let _ = save_first_use_file(&pins, path);
-                }
+                // Stored only after the handshake signature is checked (see below).
+                *self.pending_lock()? = Some((name, digest));
                 Ok(ServerCertVerified::assertion())
             }
             Some((_, known)) if *known == digest => Ok(ServerCertVerified::assertion()),
@@ -312,12 +366,14 @@ impl ServerCertVerifier for FirstUseVerify {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls12_signature(
+        let valid = verify_tls12_signature(
             message,
             cert,
             dss,
             &self.provider.signature_verification_algorithms,
-        )
+        )?;
+        self.remember_pending()?;
+        Ok(valid)
     }
 
     fn verify_tls13_signature(
@@ -326,12 +382,14 @@ impl ServerCertVerifier for FirstUseVerify {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_tls13_signature(
+        let valid = verify_tls13_signature(
             message,
             cert,
             dss,
             &self.provider.signature_verification_algorithms,
-        )
+        )?;
+        self.remember_pending()?;
+        Ok(valid)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -504,5 +562,29 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    #[test]
+    fn first_use_pin_is_stored_only_after_the_signature_check() {
+        // The certificate alone does not prove that the server holds its key, so nothing
+        // is written until the handshake signature has been checked.
+        let d = std::env::temp_dir().join(format!("rs-loxone-pending-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let path = d.join("tls-first-use.json");
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let der = CertificateDer::from(cert.cert.der().to_vec());
+        let verifier = FirstUseVerify {
+            provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+            file: Some(path.clone()),
+            pending: std::sync::Mutex::new(None),
+        };
+        let name = ServerName::try_from("pending-check.test").unwrap();
+        verifier
+            .verify_server_cert(&der, &[], &name, &[], UnixTime::now())
+            .unwrap();
+        assert!(!path.exists(), "stored before the signature was checked");
+        verifier.remember_pending().unwrap();
+        assert!(path.exists(), "not stored after the signature check");
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

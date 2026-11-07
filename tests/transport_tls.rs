@@ -307,3 +307,28 @@ async fn first_use_file_is_enforced_after_a_restart() {
     assert_eq!(b.structure_file().await.unwrap().bytes, b"{}");
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
+
+#[tokio::test]
+async fn each_first_use_file_records_the_certificate_on_its_own() {
+    // Two clients with different files and the same name. Before, the process memory
+    // already knew the name, so the second file was never written.
+    use sha2::{Digest, Sha256};
+    let host = "tofu-two-files.test";
+    let cert = test_cert();
+    let addr = spawn_tls_server(&cert);
+    let digest = hex::encode(Sha256::digest(cert.der.as_ref()));
+    for name in ["two-a", "two-b"] {
+        let path = first_use_path(name);
+        let opts = TlsOptions {
+            trust_on_first_use: true,
+            first_use_file: Some(path.clone()),
+            ..TlsOptions::default()
+        };
+        let b = bootstrap(&format!("https://{host}:{}", addr.port()), opts, Some(addr));
+        assert_eq!(b.structure_file().await.unwrap().bytes, b"{}", "{name}");
+        let text = std::fs::read_to_string(&path).expect("file written");
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json[host].as_str(), Some(digest.as_str()), "{name}");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+}
