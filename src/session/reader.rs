@@ -5,6 +5,7 @@
 //! event, stops the keepalive, and tells the writer to close the connection.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 
@@ -25,18 +26,47 @@ pub(crate) struct Waiter {
     pub tx: tokio::sync::oneshot::Sender<LlResponse>,
 }
 
-/// The slot shared between requests and the reader. Never held across an await.
-pub(crate) type WaiterSlot = Arc<std::sync::Mutex<Option<Waiter>>>;
+/// How long a reply to a timed-out request is still expected. A reply that never comes must
+/// not swallow the replies to later requests.
+pub(crate) const ABANDONED_FOR: Duration = Duration::from_secs(30);
 
-/// If a waiter matches this reply, hand the reply to it.
-fn claim(slot: &WaiterSlot, ll: &LlResponse) -> bool {
-    let Ok(mut guard) = slot.lock() else {
+/// State shared between requests and the reader. Never held across an await.
+#[derive(Default)]
+pub(crate) struct Slot {
+    /// The request that waits for a reply, if any.
+    pub waiter: Option<Waiter>,
+    /// Requests that timed out, with their needles and the time they were abandoned. A late
+    /// reply that matches one of them is dropped, so it cannot answer the next request.
+    pub abandoned: Vec<(Vec<String>, Instant)>,
+}
+
+pub(crate) type WaiterSlot = Arc<std::sync::Mutex<Slot>>;
+
+fn matches_any(needles: &[String], ll: &LlResponse) -> bool {
+    needles.iter().any(|n| ll.control.contains(n.as_str()))
+}
+
+/// Hand the reply to the waiting request if it matches. A reply that matches an abandoned
+/// request is dropped (and counts as claimed).
+fn claim(slot: &WaiterSlot, ll: &LlResponse, now: Instant) -> bool {
+    let Ok(mut slot) = slot.lock() else {
         return false;
     };
-    let matches = guard
+    slot.abandoned
+        .retain(|(_, since)| now.duration_since(*since) < ABANDONED_FOR);
+    if let Some(i) = slot
+        .abandoned
+        .iter()
+        .position(|(needles, _)| matches_any(needles, ll))
+    {
+        slot.abandoned.remove(i);
+        return true;
+    }
+    let matches = slot
+        .waiter
         .as_ref()
-        .is_some_and(|w| w.needles.iter().any(|n| ll.control.contains(n.as_str())));
-    if matches && let Some(waiter) = guard.take() {
+        .is_some_and(|w| matches_any(&w.needles, ll));
+    if matches && let Some(waiter) = slot.waiter.take() {
         let _ = waiter.tx.send(ll.clone());
     }
     matches
@@ -124,7 +154,7 @@ pub(crate) async fn run(
                             reveal_control(&shared.decrypt, ll);
                         }
                         if let Message::Text(ll) = &message
-                            && claim(&shared.waiter, ll)
+                            && claim(&shared.waiter, ll, Instant::now())
                         {
                             continue;
                         }
@@ -170,27 +200,81 @@ mod tests {
         LlResponse::parse(json.as_bytes()).unwrap()
     }
 
-    fn slot_waiting_for(needle: &str) -> (WaiterSlot, tokio::sync::oneshot::Receiver<LlResponse>) {
+    fn waiter_for(needle: &str) -> (Waiter, tokio::sync::oneshot::Receiver<LlResponse>) {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let slot: WaiterSlot = Arc::new(std::sync::Mutex::new(Some(Waiter {
+        let waiter = Waiter {
             needles: vec![needle.to_owned()],
             tx,
-        })));
+        };
+        (waiter, rx)
+    }
+
+    fn slot_waiting_for(needle: &str) -> (WaiterSlot, tokio::sync::oneshot::Receiver<LlResponse>) {
+        let (waiter, rx) = waiter_for(needle);
+        let slot: WaiterSlot = Arc::new(std::sync::Mutex::new(Slot {
+            waiter: Some(waiter),
+            ..Slot::default()
+        }));
         (slot, rx)
+    }
+
+    /// What `Shared::request` does when its reply times out: the waiter is moved to the
+    /// abandoned list.
+    fn time_out_current(slot: &WaiterSlot, since: Instant) {
+        let mut s = slot.lock().unwrap();
+        let waiter = s.waiter.take().unwrap();
+        s.abandoned.push((waiter.needles, since));
     }
 
     #[test]
     fn matching_reply_is_claimed() {
         let (slot, mut rx) = slot_waiting_for("refreshjwt");
-        assert!(claim(&slot, &reply("jdev/sys/refreshjwt/abc/admin")));
+        assert!(claim(
+            &slot,
+            &reply("jdev/sys/refreshjwt/abc/admin"),
+            Instant::now()
+        ));
         assert_eq!(rx.try_recv().unwrap().code, 200);
-        assert!(slot.lock().unwrap().is_none());
+        assert!(slot.lock().unwrap().waiter.is_none());
     }
 
     #[test]
     fn unrelated_encrypted_reply_is_not_claimed() {
         let (slot, _rx) = slot_waiting_for("refreshjwt");
-        assert!(!claim(&slot, &reply("jdev/sps/ios/uuid/1")));
-        assert!(slot.lock().unwrap().is_some());
+        assert!(!claim(&slot, &reply("jdev/sps/ios/uuid/1"), Instant::now()));
+        assert!(slot.lock().unwrap().waiter.is_some());
+    }
+
+    #[test]
+    fn late_reply_does_not_answer_the_next_request() {
+        // Request A times out, then request B waits for the same reply type. A's late
+        // reply arrives first. It must not answer B.
+        let now = Instant::now();
+        let (slot, _rx_a) = slot_waiting_for("getvisusalt");
+        time_out_current(&slot, now);
+        let (waiter_b, mut rx_b) = waiter_for("getvisusalt");
+        slot.lock().unwrap().waiter = Some(waiter_b);
+
+        assert!(claim(&slot, &reply("getvisusalt/0a0b"), now));
+        assert!(
+            rx_b.try_recv().is_err(),
+            "the late reply answered request B"
+        );
+        assert!(claim(&slot, &reply("getvisusalt/0c0d"), now));
+        assert!(rx_b.try_recv().is_ok(), "B's own reply did not reach B");
+    }
+
+    #[test]
+    fn lost_reply_does_not_swallow_later_replies_forever() {
+        // A's reply never came. Long after the timeout, B's reply must reach B.
+        let t0 = Instant::now();
+        let (slot, _rx_a) = slot_waiting_for("getvisusalt");
+        time_out_current(&slot, t0);
+        let (waiter_b, mut rx_b) = waiter_for("getvisusalt");
+        slot.lock().unwrap().waiter = Some(waiter_b);
+
+        let later = t0 + ABANDONED_FOR + Duration::from_secs(1);
+        assert!(claim(&slot, &reply("getvisusalt/0c0d"), later));
+        assert!(rx_b.try_recv().is_ok());
     }
 }

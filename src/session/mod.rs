@@ -217,7 +217,7 @@ impl Session {
 
         let (events, rx) = mpsc::unbounded_channel();
 
-        let waiter: reader::WaiterSlot = Arc::new(std::sync::Mutex::new(None));
+        let waiter: reader::WaiterSlot = Arc::new(std::sync::Mutex::new(reader::Slot::default()));
         let backlog = Arc::new(commands::Backlog::new(commands::BACKLOG_WARN_AT));
         let shared = commands::Shared::new(
             out,

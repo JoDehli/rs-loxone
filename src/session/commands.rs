@@ -266,7 +266,7 @@ impl Shared {
         let (tx, rx) = oneshot::channel();
         {
             let mut slot = self.waiter.lock().map_err(|_| SessionError::Closed)?;
-            *slot = Some(Waiter {
+            slot.waiter = Some(Waiter {
                 needles: needles.iter().map(|n| (*n).to_owned()).collect(),
                 tx,
             });
@@ -285,11 +285,11 @@ impl Shared {
             }
         };
         if let Err(err) = sent {
-            self.clear_waiter();
+            self.clear_waiter(false);
             return Err(err);
         }
         let outcome = tokio::time::timeout(REQUEST_TIMEOUT, rx).await;
-        self.clear_waiter();
+        self.clear_waiter(outcome.is_err());
         match outcome {
             Ok(Ok(reply)) => Ok(reply),
             Ok(Err(_)) => Err(SessionError::Closed),
@@ -297,9 +297,15 @@ impl Shared {
         }
     }
 
-    fn clear_waiter(&self) {
-        if let Ok(mut slot) = self.waiter.lock() {
-            *slot = None;
+    /// Remove the waiter. If the request timed out, its reply may still come: its needles are
+    /// kept, so that reply is dropped and cannot answer the next request.
+    fn clear_waiter(&self, timed_out: bool) {
+        if let Ok(mut slot) = self.waiter.lock()
+            && let Some(waiter) = slot.waiter.take()
+            && timed_out
+        {
+            slot.abandoned
+                .push((waiter.needles, std::time::Instant::now()));
         }
     }
 }
