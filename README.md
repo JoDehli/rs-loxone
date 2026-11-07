@@ -11,6 +11,17 @@ token fresh. It is a library (crate `rs_loxone`) and comes with a command line p
 - **Gen 2** (`https://`, `wss://`): tested only against the mock, not on hardware.
 - **MQTT:** planned, not started.
 
+## Quick start
+
+Connect to your Miniserver and watch what it sends:
+
+```
+cargo run --bin rs-loxone
+```
+
+It asks for the address (empty = search the network), the user and the password. See
+[The command line program](#the-command-line-program) for arguments and options.
+
 ## Build and test
 
 ```
@@ -37,9 +48,15 @@ cargo run --bin rs-loxone -- 192.168.1.10:8080 admin
 - Output: time, state name, UUID, value. `NO_COLOR=1` turns the colors off.
 - Press Enter to stop.
 
-Credentials for the live tests are read from `~/.config/rs-loxone/miniserver.env`
-(`LOX_USER`, `LOX_PASS`, `LOX_HOST`, optional `LOX_VISU_CODE`). Keep that file private
-(`chmod 600`) and never commit it.
+The live tests read their settings from a file, `miniserver.env`, with the lines
+`LOX_USER`, `LOX_PASS`, `LOX_HOST` and, optionally, `LOX_VISU_CODE` and `LOX_TEST_DEVICE`.
+
+- Linux and macOS: `~/.config/rs-loxone/miniserver.env`
+- Windows: `%USERPROFILE%\.config\rs-loxone\miniserver.env`
+- Any system: set `LOX_ENV_FILE` to the full path of the file.
+
+Keep the file private. On Linux and macOS use `chmod 600`; on Windows, allow only your
+own user in the file's security settings. Never commit it.
 
 ## Using the library
 

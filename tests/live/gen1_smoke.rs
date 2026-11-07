@@ -2,7 +2,7 @@
 //!
 //! Run with:  cargo test --test live_gen1 -- --ignored --nocapture
 //! The address comes from LOX_HOST. Credentials come from the file named by LOX_ENV_FILE, or
-//! ~/.config/rs-loxone/miniserver.env (lines LOX_USER=... and LOX_PASS=...).
+//! `.config/rs-loxone/miniserver.env` in your home folder (see `credentials_file`).
 //! Only status codes and lengths are printed, never the password or the token.
 
 use std::time::Duration;
@@ -24,18 +24,40 @@ use rs_loxone::transport::tls::TlsOptions;
 use rs_loxone::transport::url::Endpoint;
 use rs_loxone::transport::ws::{RawFrame, WsOptions, connect};
 
-/// Miniserver address for the live test, from `LOX_HOST` (for example `http://<ip>:443`).
+/// One setting from the credentials file, if the file has it.
+fn file_setting(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(credentials_file()).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .map(|v| v.trim().to_owned())
+}
+
+/// Miniserver address for the live test: `LOX_HOST` from the environment, or from the
+/// credentials file. For example `http://<ip>:443`.
 fn host() -> String {
-    std::env::var("LOX_HOST").expect("set LOX_HOST, for example http://<miniserver-ip>:443")
+    std::env::var("LOX_HOST")
+        .ok()
+        .or_else(|| file_setting("LOX_HOST"))
+        .expect("set LOX_HOST, or add it to the credentials file")
+}
+
+/// The credentials file: `LOX_ENV_FILE` if set. Otherwise `.config/rs-loxone/miniserver.env`
+/// in the user's home folder (`HOME` on Linux and macOS, `USERPROFILE` on Windows).
+fn credentials_file() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("LOX_ENV_FILE") {
+        return path.into();
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .expect("set LOX_ENV_FILE, or HOME (Linux, macOS) / USERPROFILE (Windows)");
+    std::path::PathBuf::from(home)
+        .join(".config")
+        .join("rs-loxone")
+        .join("miniserver.env")
 }
 
 fn load_credentials() -> (String, String) {
-    let path = std::env::var("LOX_ENV_FILE").unwrap_or_else(|_| {
-        format!(
-            "{}/.config/rs-loxone/miniserver.env",
-            std::env::var("HOME").unwrap()
-        )
-    });
+    let path = credentials_file();
     let text = std::fs::read_to_string(&path).expect("credentials file");
     let mut user = None;
     let mut pass = None;
@@ -415,12 +437,7 @@ async fn gen1_refresh_with_getkey() {
 
 /// One value from the credentials file. Never printed.
 fn env_value(key: &str) -> String {
-    let path = std::env::var("LOX_ENV_FILE").unwrap_or_else(|_| {
-        format!(
-            "{}/.config/rs-loxone/miniserver.env",
-            std::env::var("HOME").unwrap()
-        )
-    });
+    let path = credentials_file();
     let text = std::fs::read_to_string(&path).expect("credentials file");
     text.lines()
         .find_map(|l| l.strip_prefix(&format!("{key}=")))
