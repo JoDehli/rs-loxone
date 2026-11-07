@@ -25,6 +25,9 @@ pub enum DisconnectReason {
 /// Something that happened in the session.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    /// Logged in. `used_stored_token` is true if the stored token was used (`authwithtoken`)
+    /// and false if the password was used and a new token was issued.
+    LoggedIn { used_stored_token: bool },
     /// Logged in and state updates are enabled.
     Connected,
     /// Value states, in the order received.

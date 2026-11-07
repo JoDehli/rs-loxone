@@ -25,6 +25,7 @@ use tokio::task::JoinHandle;
 
 use crate::auth::KeyAndSalt;
 use crate::auth::keyexchange::SessionKey;
+use crate::auth::store::TokenStore;
 use crate::auth::{AuthError, Secret, token::TokenState};
 use crate::protocol::ProtocolError;
 use crate::transport::TransportError;
@@ -65,6 +66,8 @@ pub struct SessionConfig {
     pub max_command_age: Duration,
     /// How token renewal is retried and when it gives up.
     pub refresh: RefreshPolicy,
+    /// File that keeps the token between runs, if any (see [`crate::auth::store::TokenFile`]).
+    pub token_file: Option<crate::auth::store::TokenFile>,
 }
 
 impl SessionConfig {
@@ -80,6 +83,7 @@ impl SessionConfig {
             retry: RetryPolicy::default(),
             max_command_age: DEFAULT_MAX_COMMAND_AGE,
             refresh: RefreshPolicy::default(),
+            token_file: None,
         }
     }
 }
@@ -155,6 +159,8 @@ pub struct Session {
     /// The token in use. Shared with the refresh task.
     token: Arc<std::sync::Mutex<TokenState>>,
     tasks: Tasks,
+    /// True if login used the stored token instead of the password.
+    used_stored_token: bool,
 }
 
 impl Session {
@@ -205,8 +211,19 @@ impl Session {
             backlog.clone(),
         );
         // The first events go through `emit` so that the backlog count stays correct.
+        shared.emit(Event::LoggedIn {
+            used_stored_token: login.used_stored_token,
+        });
         shared.emit(Event::TokenChanged(login.token.clone()));
         shared.emit(Event::Connected);
+        let used_stored_token = login.used_stored_token;
+        let store = cfg
+            .token_file
+            .clone()
+            .map(|file| TokenStore::new(file, cfg.endpoint.clone(), cfg.username.clone()));
+        if let Some(store) = &store {
+            store.save(&login.token);
+        }
         let token = Arc::new(std::sync::Mutex::new(login.token));
 
         let reader = tokio::spawn(reader::run(receiver, shared.clone(), keepalive));
@@ -218,6 +235,7 @@ impl Session {
             cfg.username.clone(),
             info.version,
             cfg.refresh,
+            store,
         ));
 
         shared.set_ready().await?;
@@ -227,6 +245,7 @@ impl Session {
             shared,
             session_key: login.session_key,
             key2: login.key2,
+            used_stored_token,
             token,
             tasks: Tasks {
                 writer,
@@ -280,6 +299,11 @@ impl Session {
         self.shared
             .stop_reason()
             .unwrap_or(DisconnectReason::Requested)
+    }
+
+    /// True if login used the stored token (`authwithtoken`) instead of the password.
+    pub fn used_stored_token(&self) -> bool {
+        self.used_stored_token
     }
 
     /// The token in use (a copy; treat it as a secret).

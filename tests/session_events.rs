@@ -56,10 +56,11 @@ async fn async_handler_gets_connected_then_states_in_order() {
     });
     let _session = Session::connect(config(&mock), handler).await.unwrap();
 
-    // Events: TokenChanged, Connected, the Text reply to enablebinstatusupdate, ValueStates.
+    // Events: LoggedIn, TokenChanged, Connected, the Text reply to enablebinstatusupdate,
+    // ValueStates.
     let mut rx = rx;
     let mut events = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..5 {
         events.push(
             tokio::time::timeout(Duration::from_secs(5), rx.recv())
                 .await
@@ -67,13 +68,14 @@ async fn async_handler_gets_connected_then_states_in_order() {
                 .unwrap(),
         );
     }
-    assert!(matches!(events[0], Event::TokenChanged(_)));
-    assert_eq!(events[1], Event::Connected);
+    assert!(matches!(events[0], Event::LoggedIn { .. }));
+    assert!(matches!(events[1], Event::TokenChanged(_)));
+    assert_eq!(events[2], Event::Connected);
     assert!(
-        matches!(events[2], Event::Text(_)),
+        matches!(events[3], Event::Text(_)),
         "enable reply is a text reply"
     );
-    match &events[3] {
+    match &events[4] {
         Event::ValueStates(v) => {
             assert_eq!(v.len(), 2);
             assert_eq!(v[0].0, Uuid::from_loxone_bytes(u1));
@@ -95,6 +97,7 @@ async fn sync_handler_gets_the_same_events() {
     let sink = seen.clone();
     let handler = SyncHandler(move |e: Event| {
         let name = match e {
+            Event::LoggedIn { .. } => "logged_in",
             Event::TokenChanged(_) => "token",
             Event::Connected => "connected",
             Event::ValueStates(_) => "values",
@@ -108,7 +111,7 @@ async fn sync_handler_gets_the_same_events() {
     // "other" is the Text reply to enablebinstatusupdate, delivered in order.
     assert_eq!(
         *seen.lock().unwrap(),
-        vec!["token", "connected", "other", "values"]
+        vec!["logged_in", "token", "connected", "other", "values"]
     );
 }
 

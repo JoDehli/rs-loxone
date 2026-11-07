@@ -8,6 +8,7 @@ mod enc_kat;
 pub mod hash;
 pub mod keyexchange;
 pub mod reply;
+pub mod store;
 pub mod token;
 
 use std::fmt;

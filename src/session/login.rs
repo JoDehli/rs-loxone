@@ -155,7 +155,11 @@ pub async fn login(
         let r = await_reply(rx, &mut pairer, "withtoken", Some(&decrypt)).await?;
         match r.code {
             200 => {
-                let token = stored.clone();
+                // The reply carries the token's validity; use it rather than the stored value.
+                let mut token = stored.clone();
+                if let Some(until) = r.value_as_map().get("validUntil").and_then(|v| v.as_f64()) {
+                    token.renew(stored.token().expose(), until)?;
+                }
                 return finish(out, cipher, session_key, key2, token, true).await;
             }
             // Refused or unknown token: fall back to the password.

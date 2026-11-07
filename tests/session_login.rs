@@ -62,6 +62,12 @@ async fn password_login_emits_token_then_connected() {
     let mock = start(MockConfig::default());
     let (_session, mut rx) = connect_collect(config(&mock, PASSWORD)).await.unwrap();
 
+    assert!(matches!(
+        next_event(&mut rx).await,
+        Event::LoggedIn {
+            used_stored_token: false
+        }
+    ));
     match next_event(&mut rx).await {
         Event::TokenChanged(t) => assert!(t.token().expose().starts_with("eyJ.mock")),
         other => panic!("expected TokenChanged, got {other:?}"),
@@ -105,6 +111,7 @@ async fn stored_token_is_used_when_still_valid() {
     // First login: obtain a token the mock knows.
     let (first, mut rx1) = connect_collect(config(&mock, PASSWORD)).await.unwrap();
     let stored: TokenState = first.token().clone();
+    assert!(matches!(next_event(&mut rx1).await, Event::LoggedIn { .. }));
     assert!(matches!(next_event(&mut rx1).await, Event::TokenChanged(_)));
     assert_eq!(next_event(&mut rx1).await, Event::Connected);
     drop(first);
@@ -113,6 +120,12 @@ async fn stored_token_is_used_when_still_valid() {
     let mut cfg = config(&mock, PASSWORD);
     cfg.token = Some(stored);
     let (_second, mut rx2) = connect_collect(cfg).await.unwrap();
+    assert!(matches!(
+        next_event(&mut rx2).await,
+        Event::LoggedIn {
+            used_stored_token: true
+        }
+    ));
     assert!(matches!(next_event(&mut rx2).await, Event::TokenChanged(_)));
     assert_eq!(next_event(&mut rx2).await, Event::Connected);
 
@@ -134,6 +147,12 @@ async fn unknown_stored_token_falls_back_to_password() {
     let mut cfg = config(&mock, PASSWORD);
     cfg.token = Some(TokenState::new("eyJ.unknown", 563_000_000.0 + 1e9).unwrap());
     let (_s, mut rx) = connect_collect(cfg).await.unwrap();
+    assert!(matches!(
+        next_event(&mut rx).await,
+        Event::LoggedIn {
+            used_stored_token: false
+        }
+    ));
     assert!(matches!(next_event(&mut rx).await, Event::TokenChanged(_)));
     assert_eq!(next_event(&mut rx).await, Event::Connected);
 
@@ -147,4 +166,36 @@ async fn unknown_stored_token_falls_back_to_password() {
         1,
         "then the password path"
     );
+}
+
+#[tokio::test]
+async fn stored_token_takes_its_validity_from_the_reply() {
+    let mock = start(MockConfig::default());
+    let (first, _rx) = connect_collect(config(&mock, PASSWORD)).await.unwrap();
+    let issued = first.token().clone();
+
+    // The file says the token ends sooner than the Miniserver says it does.
+    let stale = TokenState::new(issued.token().expose(), issued.valid_until() - 86_000.0).unwrap();
+    let mut cfg = config(&mock, PASSWORD);
+    cfg.token = Some(stale.clone());
+    let (_second, mut rx) = connect_collect(cfg).await.unwrap();
+
+    assert!(matches!(
+        next_event(&mut rx).await,
+        Event::LoggedIn {
+            used_stored_token: true
+        }
+    ));
+    match next_event(&mut rx).await {
+        Event::TokenChanged(t) => {
+            assert_eq!(t.token().expose(), issued.token().expose(), "same token");
+            assert!(
+                (t.valid_until() - issued.valid_until()).abs() < 1.0,
+                "validity comes from the reply ({}), not the file ({})",
+                t.valid_until(),
+                stale.valid_until()
+            );
+        }
+        other => panic!("expected TokenChanged, got {other:?}"),
+    }
 }

@@ -5,6 +5,7 @@
 use std::time::Duration;
 
 use rs_loxone::auth::Secret;
+use rs_loxone::auth::store::TokenFile;
 use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::session::{AsyncHandler, DisconnectReason, Event, RefreshPolicy, SessionConfig};
 use rs_loxone::supervisor::outbox::Item;
@@ -320,4 +321,101 @@ async fn maintenance_close_waits_five_minutes_before_reconnecting() {
         "wait was {wait:?}"
     );
     handle.close();
+}
+
+#[tokio::test]
+async fn token_saved_by_one_run_is_used_by_the_next() {
+    let dir = std::env::temp_dir().join(format!(
+        "rs-loxone-supervisor-token-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path = dir.join("token.json");
+    let mock = start(MockConfig::default());
+    let mut cfg = config(&mock, PASSWORD);
+    cfg.token_file = Some(TokenFile::new(&path));
+
+    // First run: password login, then the token is written.
+    let (handle, mut rx) = run(cfg.clone());
+    until(&mut rx, |e| matches!(e, Event::Connected)).await;
+    handle.close();
+    until(&mut rx, |e| matches!(e, Event::Disconnected { .. })).await;
+    assert!(path.exists(), "token file written");
+    assert_eq!(
+        count(&mock, "jdev/sys/getjwt"),
+        1,
+        "first run used the password"
+    );
+
+    // Second run: the stored token is used, no password login.
+    let (handle2, mut rx2) = run(cfg);
+    until(&mut rx2, |e| matches!(e, Event::Connected)).await;
+    handle2.close();
+    assert_eq!(
+        count(&mock, "jdev/sys/getjwt"),
+        1,
+        "second run did not use the password"
+    );
+    let auth_with_token = mock
+        .seen()
+        .iter()
+        .filter(|s| s.starts_with("authwithtoken"))
+        .count();
+    assert_eq!(
+        auth_with_token, 1,
+        "second run authenticated with the token"
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn unreadable_token_file_falls_back_to_the_password() {
+    let dir = std::env::temp_dir().join(format!("rs-loxone-supervisor-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("token.json");
+    std::fs::write(&path, b"not json").unwrap();
+
+    let mock = start(MockConfig::default());
+    let mut cfg = config(&mock, PASSWORD);
+    cfg.token_file = Some(TokenFile::new(&path));
+    let (handle, mut rx) = run(cfg);
+    until(&mut rx, |e| matches!(e, Event::Connected)).await;
+    handle.close();
+    assert_eq!(count(&mock, "jdev/sys/getjwt"), 1, "password login");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn refused_stored_token_falls_back_to_the_password() {
+    use rs_loxone::auth::token::TokenState;
+
+    let dir = std::env::temp_dir().join(format!("rs-loxone-refused-token-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("token.json");
+
+    // The Miniserver drops the socket when it refuses a stored token, as the real one does.
+    let mock = start(MockConfig {
+        close_on_refused_token: true,
+        ..MockConfig::default()
+    });
+    let mut cfg = config(&mock, PASSWORD);
+    let endpoint = cfg.endpoint.clone();
+    // A token that is valid by its date but unknown to the Miniserver.
+    let bogus = TokenState::new("not-a-real-token", 700_000_000.0).unwrap();
+    TokenFile::new(&path).save(&endpoint, USER, &bogus).unwrap();
+    cfg.token_file = Some(TokenFile::new(&path));
+
+    let (handle, mut rx) = run(cfg);
+    until(&mut rx, |e| matches!(e, Event::Connected)).await;
+    handle.close();
+    assert_eq!(
+        count(&mock, "jdev/sys/getjwt"),
+        1,
+        "password login after the refused token"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

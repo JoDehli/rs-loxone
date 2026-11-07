@@ -108,3 +108,44 @@ async fn refused_renewals_end_the_session_with_auth_failed() {
         }
     );
 }
+
+#[tokio::test]
+async fn login_and_every_renewal_are_saved_to_the_token_file() {
+    use rs_loxone::auth::store::TokenFile;
+
+    let dir = std::env::temp_dir().join(format!("rs-loxone-renewal-save-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("token.json");
+
+    // A 4 s token is renewed after about 2 s.
+    let mock = start(MockConfig {
+        token_lifetime_secs: 4,
+        ..MockConfig::default()
+    });
+    let mut cfg = config(&mock);
+    cfg.token_file = Some(TokenFile::new(&path));
+    let (session, mut rx) = connect_collect(cfg).await;
+    let events = collect_for(&mut rx, Duration::from_secs(6)).await;
+    session.close().await;
+
+    let last_renewed = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::TokenChanged(t) => Some(t.token().expose().to_owned()),
+            _ => None,
+        })
+        .next_back()
+        .expect("at least one TokenChanged");
+    let stored = TokenFile::new(&path)
+        .load(
+            &Endpoint::parse(&format!("http://{}", mock.addr())).unwrap(),
+            "admin",
+        )
+        .expect("token file written");
+    assert_eq!(
+        stored.token().expose(),
+        last_renewed,
+        "the file holds the newest token, not the one from login"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

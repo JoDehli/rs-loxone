@@ -71,16 +71,22 @@ impl SupervisorHandle {
 
 /// Start a supervisor. Returns at once; the first connection is made in the background,
 /// and its outcome arrives as events. Must be called inside a Tokio runtime.
-pub fn start<H: EventHandler>(cfg: SessionConfig, handler: H) -> SupervisorHandle {
+pub fn start<H: EventHandler>(mut cfg: SessionConfig, handler: H) -> SupervisorHandle {
     let (events_tx, events_rx) = unbounded_channel();
     let (control_tx, control_rx) = unbounded_channel();
     tokio::spawn(dispatch(events_rx, handler));
+    // A token from the file is used only when the caller gave none.
+    if cfg.token.is_none()
+        && let Some(file) = &cfg.token_file
+    {
+        cfg.token = file.load(&cfg.endpoint, &cfg.username);
+    }
     let runner = Runner {
         outbox: Outbox::new(cfg.max_command_age),
+        token: cfg.token.clone(),
         cfg,
         control: control_rx,
         events: events_tx,
-        token: None,
         failed: 0,
         auth_failures: 0,
         force_password: false,
@@ -166,6 +172,7 @@ impl Runner {
                 events: self.events.clone(),
                 done: Some(done_tx),
             };
+            let offered_token = cfg.token.is_some();
             let session = match Session::connect(cfg, forward).await {
                 Ok(session) => session,
                 // The Miniserver refused the login. Retrying would only repeat the refusal.
@@ -176,6 +183,12 @@ impl Runner {
                     return;
                 }
                 Err(err) => {
+                    // The login failed. If it had a stored token, the token may be the reason (the
+                    // Miniserver can drop the socket instead of answering), so the next attempt
+                    // uses the password. Otherwise every retry would present the same token.
+                    if offered_token {
+                        self.force_password = true;
+                    }
                     let long = matches!(
                         err,
                         SessionError::Rejected { code, .. } if backoff::is_long_wait_code(code)

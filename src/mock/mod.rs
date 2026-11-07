@@ -80,6 +80,9 @@ pub struct MockConfig {
     pub close_after_enable: Option<u16>,
     /// With `close_after_enable`: only close for the first N enables (None = every time).
     pub close_first_enables: Option<u32>,
+    /// Close the socket instead of answering when a stored token is refused, as the real
+    /// Miniserver does.
+    pub close_on_refused_token: bool,
     /// Commands (inner text, prefix match) that the mock records but never answers.
     pub mute_prefixes: Vec<String>,
     /// Lifetime of issued tokens, in seconds from now.
@@ -103,6 +106,7 @@ impl Default for MockConfig {
             initial_states: vec![],
             close_after_enable: None,
             close_first_enables: None,
+            close_on_refused_token: false,
             mute_prefixes: vec![],
             token_lifetime_secs: 86_400,
             refuse_refresh: false,
@@ -626,8 +630,17 @@ fn inner_command(cmd: &str, s: &mut State, cfg: &MockConfig) -> Vec<Out> {
     if let Some(rest) = cmd.strip_prefix("authwithtoken/") {
         let hash = rest.split('/').next().unwrap_or("");
         let valid = s.tokens.iter().any(|t| token_hash(t, &s.key2) == hash);
-        let code = if valid { 200 } else { 404 };
-        return vec![Out::Text(ll("authwithtoken", code, json!("")))];
+        if !valid && cfg.close_on_refused_token {
+            return vec![Out::Close(1000)];
+        }
+        if valid {
+            return vec![Out::Text(ll(
+                "authwithtoken",
+                200,
+                json!({"validUntil": valid_until(cfg.token_lifetime_secs), "tokenRights": 1666, "unsecurePass": false}),
+            ))];
+        }
+        return vec![Out::Text(ll("authwithtoken", 404, json!("")))];
     }
 
     if cmd == "jdev/sps/LoxAPPversion3" {

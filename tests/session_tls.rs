@@ -58,6 +58,13 @@ async fn login_commands_and_structure_work_over_https_and_wss() {
             .await
             .unwrap()
             .unwrap(),
+        Event::LoggedIn { .. }
+    ));
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap(),
         Event::TokenChanged(_)
     ));
     assert_eq!(

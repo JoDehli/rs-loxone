@@ -3,7 +3,7 @@
 //! 1. Plain `jdev/sys/getkey`: the reply's `value` is a fresh key.
 //! 2. Hash the current token with that key (algorithm from getkey2).
 //! 3. `jdev/sys/refreshjwt/<hash>/<user>`, encrypted, on the same salt chain.
-//! 4. Code 200: store the new token and report it.
+//! 4. Code 200: store the new token, save it if a token file is set, and report it.
 //!
 //! Waiting: the first renewal is due `refresh_delay` after the token was issued. A
 //! failed cycle is retried after `attempt_delay`, up to `attempts` times. A cycle that
@@ -16,6 +16,7 @@ use std::time::Duration;
 use crate::auth::commands;
 use crate::auth::hash::token_hash;
 use crate::auth::reply::parse_token;
+use crate::auth::store::TokenStore;
 use crate::auth::token::TokenState;
 use crate::auth::{KeyAndSalt, Secret};
 use crate::session::commands::Shared;
@@ -88,6 +89,7 @@ pub(crate) async fn run(
     user: String,
     version: [u32; 3],
     policy: RefreshPolicy,
+    store: Option<TokenStore>,
 ) {
     let mut wait = match token.lock() {
         Ok(t) => t.refresh_delay(now_loxone()),
@@ -121,6 +123,9 @@ pub(crate) async fn run(
                 failed_cycles = 0;
                 if let Ok(mut current) = token.lock() {
                     *current = new.clone();
+                }
+                if let Some(store) = &store {
+                    store.save(&new);
                 }
                 shared.emit(Event::TokenChanged(new.clone()));
                 wait = new.refresh_delay(now_loxone());

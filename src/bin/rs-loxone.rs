@@ -17,6 +17,7 @@ use std::net::SocketAddrV4;
 use std::time::Duration;
 
 use rs_loxone::auth::Secret;
+use rs_loxone::auth::store::TokenFile;
 use rs_loxone::protocol::Uuid;
 use rs_loxone::session::{AsyncHandler, Event, SessionConfig};
 use rs_loxone::structure::Structure;
@@ -171,16 +172,21 @@ fn describe(event: &Event, structure: &Structure, style: &Style) -> Vec<String> 
         )
     };
     match event {
+        Event::LoggedIn { used_stored_token } => vec![format!(
+            "{now}  {}",
+            style.note(if *used_stored_token {
+                "🔑 login with the stored token, no new token"
+            } else {
+                "🔑 login with the password, new token issued"
+            })
+        )],
         Event::Connected => vec![format!(
             "{now}  {}",
             style.ok("✔ connected, state updates on")
         )],
         Event::TokenChanged(t) => vec![format!(
             "{now}  {}",
-            style.note(&format!(
-                "🔑 token renewed, valid until {:.0}",
-                t.valid_until()
-            ))
+            style.note(&format!("🔑 token valid until {:.0}", t.valid_until()))
         )],
         Event::ValueStates(values) => values
             .iter()
@@ -260,6 +266,7 @@ async fn main() {
         println!("  HOST  address, e.g. 192.168.1.10:8080 (asked for if missing)");
         println!("  USER  user name (asked for if missing)");
         println!("  LOX_PASS  password, to skip the prompt");
+        println!("  LOX_TOKEN_FILE  keep the token in this file between runs");
         println!("  NO_COLOR  set to turn colors off");
         return;
     }
@@ -351,6 +358,10 @@ async fn main() {
     // The supervisor connects in the background and reports everything as events.
     let mut cfg = SessionConfig::new(endpoint, user, Secret::new(password));
     cfg.max_command_age = Duration::from_secs(30);
+    if let Some(path) = std::env::var_os("LOX_TOKEN_FILE") {
+        println!("token file: {}", std::path::Path::new(&path).display());
+        cfg.token_file = Some(TokenFile::new(path));
+    }
     let structure_for_events = structure.clone();
     let style = Style::new();
     let handle = supervisor::start(

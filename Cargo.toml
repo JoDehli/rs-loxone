@@ -68,3 +68,7 @@ required-features = ["mock"]
 [[test]]
 name = "live_gen1"
 path = "tests/live/gen1_smoke.rs"
+
+[[test]]
+name = "live_token_store"
+path = "tests/live/token_store.rs"
