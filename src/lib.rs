@@ -7,6 +7,7 @@
 //! - [`structure`]: the structure file, with lookups by name, type and state.
 
 pub mod auth;
+pub mod discover;
 pub mod protocol;
 pub mod session;
 pub mod structure;

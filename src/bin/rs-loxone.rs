@@ -7,24 +7,25 @@
 //! 4. start the supervisor, which connects, reconnects and keeps the token fresh,
 //! 5. print every event until you press Enter.
 //!
-//! Run:  cargo run --example connect
+//! Run:  cargo run --bin rs-loxone [HOST [USER]]
 //!
 //! For scripted runs, set LOX_PASS in the environment; the password prompt is then skipped.
+//! Use it as a test of the library and as an example of how to use it.
 
 use std::io::{self, BufRead, Write};
 use std::net::SocketAddrV4;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rs_loxone::auth::Secret;
 use rs_loxone::protocol::Uuid;
 use rs_loxone::session::{AsyncHandler, Event, SessionConfig};
 use rs_loxone::structure::Structure;
 use rs_loxone::supervisor;
+use rs_loxone::transport::TransportError;
 use rs_loxone::transport::http::{BootstrapConfig, HttpBootstrap};
 use rs_loxone::transport::retry::RetryPolicy;
 use rs_loxone::transport::tls::TlsOptions;
 use rs_loxone::transport::url::Endpoint;
-use tokio::net::UdpSocket;
 
 /// Width of the name column, so the UUIDs line up.
 const LABEL_WIDTH: usize = 50;
@@ -39,40 +40,6 @@ fn ask(label: &str) -> String {
     line.trim().to_owned()
 }
 
-/// Find Miniservers on the local network, as the Loxone discovery does: a UDP broadcast
-/// to port 7070, answered from port 7071 with a line like `LoxLIVE:... <ip>:<port> ...`.
-async fn discover() -> Vec<(SocketAddrV4, String)> {
-    let mut found: Vec<(SocketAddrV4, String)> = Vec::new();
-    let Ok(socket) = UdpSocket::bind("0.0.0.0:7071").await else {
-        return found;
-    };
-    if socket.set_broadcast(true).is_err() {
-        return found;
-    }
-    for _ in 0..3 {
-        let _ = socket.send_to(&[0u8], "255.255.255.255:7070").await;
-    }
-    let deadline = Instant::now() + Duration::from_secs(DISCOVER_SECONDS);
-    let mut buf = [0u8; 1024];
-    while let Ok(Ok((n, _))) =
-        tokio::time::timeout_at(deadline.into(), socket.recv_from(&mut buf)).await
-    {
-        let text = String::from_utf8_lossy(&buf[..n]).to_string();
-        if !text.starts_with("LoxLIVE:") {
-            continue;
-        }
-        let addr = text
-            .split_whitespace()
-            .find_map(|token| token.parse::<SocketAddrV4>().ok());
-        if let Some(addr) = addr
-            && !found.iter().any(|(known, _)| *known == addr)
-        {
-            found.push((addr, text.trim().to_owned()));
-        }
-    }
-    found
-}
-
 /// Ask for the Miniserver address: typed, or chosen from a discovery result.
 async fn choose_address() -> String {
     let typed = ask("Miniserver address (e.g. 192.168.1.10:8080), Enter = search the network");
@@ -80,7 +47,14 @@ async fn choose_address() -> String {
         return typed;
     }
     println!("searching the local network ({DISCOVER_SECONDS} s) ...");
-    let found = discover().await;
+    let found: Vec<(SocketAddrV4, String)> =
+        match rs_loxone::discover::discover(Duration::from_secs(DISCOVER_SECONDS)).await {
+            Ok(found) => found.into_iter().map(|f| (f.addr, f.reply)).collect(),
+            Err(err) => {
+                println!("discovery failed ({err}). Type the address instead.");
+                Vec::new()
+            }
+        };
     match found.len() {
         0 => {
             println!("no Miniserver answered. Type the address instead.");
@@ -280,11 +254,37 @@ fn describe(event: &Event, structure: &Structure, style: &Style) -> Vec<String> 
 async fn main() {
     println!("rs-loxone connection test");
     println!("-------------------------");
-    let host = choose_address().await;
-    let user = ask("User");
-    let password = std::env::var("LOX_PASS").unwrap_or_else(|_| {
-        rpassword::prompt_password("Password (not shown): ").unwrap_or_default()
-    });
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("usage: rs-loxone [HOST [USER]]");
+        println!("  HOST  address, e.g. 192.168.1.10:8080 (asked for if missing)");
+        println!("  USER  user name (asked for if missing)");
+        println!("  LOX_PASS  password, to skip the prompt");
+        println!("  NO_COLOR  set to turn colors off");
+        return;
+    }
+    let host = match args.first() {
+        Some(host) => host.clone(),
+        None => choose_address().await,
+    };
+    let user = match args.get(1) {
+        Some(user) => user.clone(),
+        None => ask("User"),
+    };
+    let password = match std::env::var("LOX_PASS") {
+        Ok(password) => password,
+        Err(_) => match rpassword::prompt_password("Password (not shown): ") {
+            Ok(password) => password,
+            Err(err) => {
+                eprintln!("cannot read the password: {err}");
+                return;
+            }
+        },
+    };
+    if password.is_empty() {
+        eprintln!("no password entered");
+        return;
+    }
 
     let endpoint = match Endpoint::parse(&host) {
         Ok(endpoint) => endpoint,
@@ -311,6 +311,10 @@ async fn main() {
                     return;
                 }
             },
+            Err(TransportError::Http { status: 401 }) => {
+                eprintln!("the Miniserver refused the user name or password (401)");
+                return;
+            }
             Err(err) => {
                 eprintln!("no structure file: {err}");
                 return;
