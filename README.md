@@ -33,19 +33,61 @@ rs-loxone = "0.1"
 
 The command line program is an optional feature: `cargo install rs-loxone --features cli`.
 
-## Build and test
+## Tests
+
+Everything runs without a Miniserver:
 
 ```
-cargo build
-cargo test --features mock       # all tests, no Miniserver needed
+cargo test --features mock
+```
+
+The `mock` feature adds a scripted fake Miniserver (`src/mock`). Tests that use it are
+only compiled with that feature. Without it, `cargo test` runs the unit tests and the
+tests that need no mock (167 tests); with it, all 207 tests run.
+
+Checks before a commit:
+
+```
+cargo fmt --check
 cargo clippy --all-targets --features mock,cli -- -D warnings
+cargo test --features mock
 ```
 
-The live tests in `tests/live/` need a real Miniserver and are ignored by default:
+### Live tests
+
+The tests in `tests/live/` talk to a real Miniserver. They are ignored by default, so
+a normal test run never touches your device. Each one needs its settings from the
+credentials file or the environment (see below):
 
 ```
-LOX_HOST=http://<ip>:<port> cargo test --test live_gen1 -- --ignored --nocapture
+cargo test --test live_gen1 -- --ignored --nocapture
 ```
+
+They print only status codes and results, never passwords, codes or tokens. Some of
+them change the device: `gen1_alarm_arm_then_disarm` arms and disarms the alarm, so
+run it only when nobody is in the monitored area.
+
+### Settings for the live tests
+
+The live tests read a file `miniserver.env` with these lines:
+
+```
+LOX_USER=<user>
+LOX_PASS=<password>
+LOX_HOST=http://<ip>:<port>
+LOX_VISU_CODE=<visualization code>      # only for the visualization code tests
+LOX_TEST_DEVICE=<device uuid>           # only for the secured command tests
+```
+
+The file is found in this order:
+
+1. `LOX_ENV_FILE`, if set, as the full path.
+2. `.config/rs-loxone/miniserver.env` in your home folder: `HOME` on Linux and macOS,
+   `USERPROFILE` on Windows.
+
+Environment variables with the same names take precedence over the file. Keep the file
+private: `chmod 600` on Linux and macOS; on Windows, allow only your own user in the
+file's security settings. Never commit it.
 
 ## The command line program
 
@@ -58,16 +100,6 @@ cargo run --features cli --bin rs-loxone -- 192.168.1.10:8080 admin
 - The password is typed without echo. For scripts, set `LOX_PASS` instead.
 - Output: time, state name, UUID, value. `NO_COLOR=1` turns the colors off.
 - Press Enter to stop.
-
-The live tests read their settings from a file, `miniserver.env`, with the lines
-`LOX_USER`, `LOX_PASS`, `LOX_HOST` and, optionally, `LOX_VISU_CODE` and `LOX_TEST_DEVICE`.
-
-- Linux and macOS: `~/.config/rs-loxone/miniserver.env`
-- Windows: `%USERPROFILE%\.config\rs-loxone\miniserver.env`
-- Any system: set `LOX_ENV_FILE` to the full path of the file.
-
-Keep the file private. On Linux and macOS use `chmod 600`; on Windows, allow only your
-own user in the file's security settings. Never commit it.
 
 ## Using the library
 
