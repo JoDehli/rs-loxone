@@ -58,7 +58,7 @@ x509-cert = "0.3.0"
 zeroize = "1.9.1"
 
 [dev-dependencies]
-loxone-mock = { path = "loxone-mock" }
+loxone-mock = { version = "0.1.0", path = "loxone-mock" }
 rcgen = "0.14.10"
 tokio = { version = "1.54.1", features = ["test-util", "rt", "macros"] }
 

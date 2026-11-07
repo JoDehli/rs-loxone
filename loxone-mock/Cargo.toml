@@ -3,7 +3,19 @@ name = "loxone-mock"
 version = "0.1.0"
 edition = "2024"
 description = "Scripted mock Loxone Miniserver (HTTP + WebSocket) for tests. Not for production."
-publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JoDehli/rs-loxone"
+readme = "README.md"
+keywords = ["loxone", "miniserver", "mock", "testing"]
+categories = ["development-tools::testing"]
+include = [
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+    "/src/**",
+    "/fixtures/**",
+]
 
 [dependencies]
 aes = "0.9.4"
