@@ -89,9 +89,13 @@ async fn choose_address() -> String {
 /// `LOX_TLS_PIN`: the SHA-256 of the Miniserver's certificate (DER), as 64 hex digits.
 fn tls_from_env() -> Result<TlsOptions, String> {
     let Some(hex) = std::env::var_os("LOX_TLS_PIN") else {
-        return Ok(TlsOptions {
-            trust_on_first_use: std::env::var_os("LOX_TLS_TOFU").is_some(),
-            ..TlsOptions::default()
+        return Ok(match std::env::var_os("LOX_TLS_TOFU") {
+            Some(path) => TlsOptions {
+                trust_on_first_use: true,
+                first_use_file: Some(std::path::PathBuf::from(path)),
+                ..TlsOptions::default()
+            },
+            None => TlsOptions::default(),
         });
     };
     let hex = hex.to_string_lossy().trim().to_owned();
@@ -298,9 +302,7 @@ async fn main() {
         println!(
             "  LOX_TLS_PIN  SHA-256 of the certificate (hex), for https; only this certificate is accepted"
         );
-        println!(
-            "  LOX_TLS_TOFU  for https: remember the first certificate seen (until the program stops)"
-        );
+        println!("  LOX_TLS_TOFU  for https: remember the first certificate seen, in this file");
         println!("  NO_COLOR  set to turn colors off");
         return;
     }

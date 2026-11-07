@@ -35,6 +35,9 @@ pub struct TlsOptions {
     /// life of the process, and a different one is refused afterwards. Nothing is stored on
     /// disk, so a restart starts again with the first contact. Ignored if a pin is set.
     pub trust_on_first_use: bool,
+    /// File that keeps the remembered certificates between runs (JSON: host name to hex
+    /// SHA-256). Only used with `trust_on_first_use`. Without it, memory is per process.
+    pub first_use_file: Option<std::path::PathBuf>,
 }
 
 impl Default for TlsOptions {
@@ -44,6 +47,7 @@ impl Default for TlsOptions {
             extra_root_pem: None,
             pinned_cert_sha256: None,
             trust_on_first_use: false,
+            first_use_file: None,
         }
     }
 }
@@ -55,6 +59,7 @@ impl fmt::Debug for TlsOptions {
             .field("extra_root", &self.extra_root_pem.as_ref().map(|_| "<pem>"))
             .field("pinned", &self.pinned_cert_sha256.is_some())
             .field("trust_on_first_use", &self.trust_on_first_use)
+            .field("first_use_file", &self.first_use_file)
             .finish()
     }
 }
@@ -69,7 +74,10 @@ pub fn client_config(opts: &TlsOptions) -> Result<Arc<ClientConfig>, TransportEr
     let config = if opts.pinned_cert_sha256.is_none() && opts.trust_on_first_use {
         builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(FirstUseVerify { provider }))
+            .with_custom_certificate_verifier(Arc::new(FirstUseVerify {
+                provider,
+                file: opts.first_use_file.clone(),
+            }))
             .with_no_client_auth()
     } else if let Some(pin) = opts.pinned_cert_sha256 {
         builder
@@ -227,6 +235,41 @@ static FIRST_USE_PINS: std::sync::Mutex<Vec<(String, [u8; 32])>> =
 #[derive(Debug)]
 struct FirstUseVerify {
     provider: Arc<CryptoProvider>,
+    file: Option<std::path::PathBuf>,
+}
+
+/// Read the remembered certificates from `path` and add the names that memory does not
+/// have yet. A missing or unreadable file adds nothing.
+fn merge_first_use_file(pins: &mut Vec<(String, [u8; 32])>, path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&text)
+    else {
+        return;
+    };
+    for (name, value) in map {
+        let Some(bytes) = value.as_str().and_then(|h| hex::decode(h).ok()) else {
+            continue;
+        };
+        let Ok(digest) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            continue;
+        };
+        if !pins.iter().any(|(n, _)| *n == name) {
+            pins.push((name, digest));
+        }
+    }
+}
+
+/// Write all remembered certificates to `path`, atomically and private.
+fn save_first_use_file(pins: &[(String, [u8; 32])], path: &std::path::Path) -> std::io::Result<()> {
+    let map: serde_json::Map<String, serde_json::Value> = pins
+        .iter()
+        .map(|(name, digest)| (name.clone(), serde_json::Value::String(hex::encode(digest))))
+        .collect();
+    let json = serde_json::to_vec_pretty(&serde_json::Value::Object(map))
+        .map_err(std::io::Error::other)?;
+    crate::auth::store::write_private_atomic(path, &json)
 }
 
 impl ServerCertVerifier for FirstUseVerify {
@@ -244,9 +287,16 @@ impl ServerCertVerifier for FirstUseVerify {
         let mut pins = FIRST_USE_PINS
             .lock()
             .map_err(|_| rustls::Error::General("trust store poisoned".into()))?;
+        if let Some(path) = &self.file {
+            merge_first_use_file(&mut pins, path);
+        }
         match pins.iter().find(|(n, _)| *n == name) {
             None => {
                 pins.push((name, digest));
+                if let Some(path) = &self.file {
+                    // A write failure only means the pin is not kept across restarts.
+                    let _ = save_first_use_file(&pins, path);
+                }
                 Ok(ServerCertVerified::assertion())
             }
             Some((_, known)) if *known == digest => Ok(ServerCertVerified::assertion()),
@@ -436,6 +486,7 @@ mod tests {
             extra_root_pem: Some(b"junk".to_vec()),
             pinned_cert_sha256: None,
             trust_on_first_use: false,
+            first_use_file: None,
         };
         assert!(root_store(&opts).is_err());
     }
@@ -449,6 +500,7 @@ mod tests {
                 extra_root_pem: None,
                 pinned_cert_sha256: None,
                 trust_on_first_use: false,
+                first_use_file: None,
             })
             .is_ok()
         );

@@ -126,6 +126,25 @@ impl TokenStore {
     }
 }
 
+/// Write `bytes` to `path` atomically: a temporary file in the same directory, then a
+/// rename. The directory is created private; on Unix the file is 0600.
+pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let dir = parent_dir(path);
+    create_private_dir(dir)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("file path has no file name"))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(file_name);
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp = dir.join(tmp_name);
+    let written = write_private(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// What a stored token is bound to: the endpoint and the user name.
 fn binding(endpoint: &Endpoint, user: &str) -> String {
     let scheme = match endpoint.scheme {

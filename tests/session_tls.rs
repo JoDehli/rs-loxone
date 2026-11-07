@@ -27,6 +27,7 @@ fn trusted() -> TlsOptions {
         extra_root_pem: Some(test_certificate_pem().as_bytes().to_vec()),
         pinned_cert_sha256: None,
         trust_on_first_use: false,
+        first_use_file: None,
     }
 }
 
@@ -110,6 +111,7 @@ async fn verification_can_be_switched_off_explicitly() {
         extra_root_pem: None,
         pinned_cert_sha256: None,
         trust_on_first_use: false,
+        first_use_file: None,
     };
     assert!(
         Session::connect(tls_config(mock.addr(), off), handler)

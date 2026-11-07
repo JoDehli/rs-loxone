@@ -101,6 +101,7 @@ async fn extra_root_makes_the_certificate_trusted() {
         extra_root_pem: Some(cert.pem.clone().into_bytes()),
         pinned_cert_sha256: None,
         trust_on_first_use: false,
+        first_use_file: None,
     };
     let b = bootstrap(
         &format!("https://localhost:{}", addr.port()),
@@ -120,6 +121,7 @@ async fn verification_off_accepts_any_certificate() {
         extra_root_pem: None,
         pinned_cert_sha256: None,
         trust_on_first_use: false,
+        first_use_file: None,
     };
     let b = bootstrap(
         &format!("https://localhost:{}", addr.port()),
@@ -142,6 +144,7 @@ async fn cloud_dns_name_with_local_ip_verifies_against_the_name() {
         extra_root_pem: Some(cert.pem.clone().into_bytes()),
         pinned_cert_sha256: None,
         trust_on_first_use: false,
+        first_use_file: None,
     };
     let b = bootstrap(&format!("https://{name}"), opts, Some(addr));
     assert_eq!(b.structure_file().await.unwrap().bytes, b"{}");
@@ -237,4 +240,70 @@ async fn first_use_remembers_the_certificate_and_refuses_a_changed_one() {
     );
     let err = b.structure_file().await.unwrap_err();
     assert!(matches!(err, TransportError::Tls(_)), "{err:?}");
+}
+
+fn first_use_path(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("rs-loxone-tofu-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir.join("tls-first-use.json")
+}
+
+#[tokio::test]
+async fn first_use_file_records_the_first_certificate() {
+    use sha2::{Digest, Sha256};
+    let host = "tofu-file-record.test";
+    let path = first_use_path("record");
+    let cert = test_cert();
+    let addr = spawn_tls_server(&cert);
+    let opts = TlsOptions {
+        trust_on_first_use: true,
+        first_use_file: Some(path.clone()),
+        ..TlsOptions::default()
+    };
+    let b = bootstrap(&format!("https://{host}:{}", addr.port()), opts, Some(addr));
+    assert_eq!(b.structure_file().await.unwrap().bytes, b"{}");
+
+    let text = std::fs::read_to_string(&path).expect("file written");
+    let digest = hex::encode(Sha256::digest(cert.der.as_ref()));
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(json[host].as_str(), Some(digest.as_str()));
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn first_use_file_is_enforced_after_a_restart() {
+    use sha2::{Digest, Sha256};
+    let host = "tofu-file-restart.test";
+    let path = first_use_path("restart");
+    let known = test_cert();
+    // The file says which certificate was seen first, as an earlier run would have written it.
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let digest = hex::encode(Sha256::digest(known.der.as_ref()));
+    std::fs::write(&path, serde_json::json!({ host: digest }).to_string()).unwrap();
+
+    let opts = || TlsOptions {
+        trust_on_first_use: true,
+        first_use_file: Some(path.clone()),
+        ..TlsOptions::default()
+    };
+    // A different certificate under the remembered name: refused.
+    let other = test_cert();
+    let other_addr = spawn_tls_server(&other);
+    let b = bootstrap(
+        &format!("https://{host}:{}", other_addr.port()),
+        opts(),
+        Some(other_addr),
+    );
+    let err = b.structure_file().await.unwrap_err();
+    assert!(matches!(err, TransportError::Tls(_)), "{err:?}");
+
+    // The remembered certificate: accepted.
+    let addr = spawn_tls_server(&known);
+    let b = bootstrap(
+        &format!("https://{host}:{}", addr.port()),
+        opts(),
+        Some(addr),
+    );
+    assert_eq!(b.structure_file().await.unwrap().bytes, b"{}");
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

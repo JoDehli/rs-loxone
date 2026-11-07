@@ -264,6 +264,7 @@ async fn wss_with_extra_root_delivers_frames() {
             extra_root_pem: Some(cert.pem.clone().into_bytes()),
             pinned_cert_sha256: None,
             trust_on_first_use: false,
+            first_use_file: None,
         },
         connect_addr: Some(addr),
         ..WsOptions::default()

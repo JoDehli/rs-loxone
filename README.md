@@ -149,7 +149,8 @@ cargo run --features cli --bin rs-loxone -- 192.168.1.10:8080 admin
   with it, without the password for the connection (the structure file still needs the
   password). See [Keeping the token](#keeping-the-token).
 - `LOX_TLS_PIN=<64 hex digits>` accepts only the certificate with this SHA-256 fingerprint,
-  and `LOX_TLS_TOFU=1` remembers the first certificate seen. See [TLS](#tls).
+  and `LOX_TLS_TOFU=<file>` remembers the first certificate seen for each host name in that
+  file. See [TLS](#tls).
 - Output: time, state name, UUID, value. `NO_COLOR=1` turns the colors off.
 - Press Enter to stop.
 
@@ -264,13 +265,14 @@ Set `SessionConfig::token_file` to a `TokenFile` and the session keeps its token
 | default (`verify: true`) | A certificate that a public CA or the extra root signed, with the host name | Miniservers under a real name |
 | `extra_root_pem` | Same as default, plus your own root (for example the Loxone root) | Your own certificate authority |
 | `pinned_cert_sha256` | Only the certificate with this SHA-256 (DER). Chain and host name are not checked | A fixed, known certificate, for example a Miniserver by IP |
-| `trust_on_first_use: true` | The first certificate seen for a host name. Later ones must match | When you cannot get the fingerprint in advance |
+| `trust_on_first_use: true` | The first certificate seen for a host name. Later ones must match. With `first_use_file` the list is kept in that file | When you cannot get the fingerprint in advance |
 | `verify: false` | Anything | Only for tests; no protection against an attacker on the network |
 
 Notes:
 - The pin has priority over `trust_on_first_use`, which has priority over `verify`.
-- Trust on first use is remembered only for the life of the process. After a restart the
-  first contact counts again. An attacker who is on the network at that first contact gets
+- Without `first_use_file` the memory lasts only for the life of the process; after a restart
+  the first contact counts again. With `first_use_file` the list survives restarts (mode 0600,
+  written atomically). In both cases an attacker on the network at the first contact gets
   their certificate remembered. Use a pin if you can get the fingerprint some other way.
 - To read the fingerprint of a certificate:
   `openssl s_client -connect HOST:PORT </dev/null 2>/dev/null | openssl x509 -outform DER | sha256sum`
