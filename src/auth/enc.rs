@@ -93,9 +93,8 @@ impl ControlDecrypter {
             return Err(AuthError::Decrypt("block length"));
         }
         let dec = cbc::Decryptor::<Aes256>::new(&self.aes_key.into(), &self.iv.into());
-        let len = buf.len();
         let plain = dec
-            .decrypt_padded::<NoPadding>(&mut buf[..len])
+            .decrypt_padded::<NoPadding>(&mut buf)
             .map_err(|_| AuthError::Decrypt("padding"))?;
         let plain = strip_padding(plain);
         let text = std::str::from_utf8(plain).map_err(|_| AuthError::Decrypt("utf-8"))?;
@@ -109,6 +108,11 @@ impl ControlDecrypter {
 /// block boundary, as the Loxone protocol table lists). PKCS#7 is tried first: a valid
 /// tail whose value is `n` (1..=16) repeated `n` times is removed; otherwise trailing
 /// zero bytes are removed.
+///
+/// Known limit: the two rules are not distinguishable in general. A payload that is exactly
+/// block-aligned and ends in bytes that form a valid PKCS#7 tail (for example `0x02 0x02`)
+/// would lose them. Loxone replies are text, which never ends in such control bytes, so
+/// the rule is unambiguous for them. There is no length field to check against.
 fn strip_padding(plain: &[u8]) -> &[u8] {
     if let Some(&n) = plain.last() {
         let n = n as usize;
