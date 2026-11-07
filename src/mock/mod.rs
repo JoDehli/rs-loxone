@@ -42,6 +42,16 @@ const CA_PEM: &str = include_str!("../../tests/fixtures/test_ca.pem");
 /// Private key matching the certificate (test only).
 const KEY_PEM: &str = include_str!("../../tests/fixtures/test_key.pem");
 
+/// A burst of value states for load tests. Record `i` has the UUID `i` (16 bytes, little
+/// endian) and the value `i as f64`, so the receiver can check order and gaps.
+#[derive(Debug, Clone, Copy)]
+pub struct Flood {
+    /// Total number of records.
+    pub records: u64,
+    /// Records per value-state table (one table is one event on the client).
+    pub per_table: usize,
+}
+
 /// A fake alarm control that answers secured commands and reports its `armed` state.
 #[derive(Debug, Clone)]
 pub struct FakeAlarm {
@@ -78,6 +88,8 @@ pub struct MockConfig {
     pub refuse_refresh: bool,
     /// A fake alarm for secured commands (`on`, `on/0`, `on/1`, `off`).
     pub alarm: Option<FakeAlarm>,
+    /// After `enablebinstatusupdate`, send this many value states in a flood (for load tests).
+    pub flood: Option<Flood>,
 }
 
 impl Default for MockConfig {
@@ -95,6 +107,7 @@ impl Default for MockConfig {
             token_lifetime_secs: 86_400,
             refuse_refresh: false,
             alarm: None,
+            flood: None,
         }
     }
 }
@@ -393,6 +406,29 @@ enum Out {
     Close(u16),
 }
 
+/// The value-state tables of a flood, in order.
+fn flood_tables(flood: Flood) -> Vec<Out> {
+    let per_table = flood.per_table.max(1) as u64;
+    let mut out = Vec::new();
+    let mut next = 0u64;
+    while next < flood.records {
+        let count = per_table.min(flood.records - next);
+        let mut payload = Vec::with_capacity(count as usize * 24);
+        for i in next..next + count {
+            let mut uuid = [0u8; 16];
+            uuid[..8].copy_from_slice(&i.to_le_bytes());
+            payload.extend_from_slice(&uuid);
+            payload.extend_from_slice(&(i as f64).to_le_bytes());
+        }
+        let mut header = vec![3u8, 2, 0, 0];
+        header.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.push(Out::Binary(header));
+        out.push(Out::Binary(payload));
+        next += count;
+    }
+    out
+}
+
 /// One value-state table with a single entry, as the Miniserver pushes it.
 fn value_frame(uuid: &[u8; 16], value: f64) -> Vec<Out> {
     let mut payload = Vec::with_capacity(24);
@@ -606,6 +642,9 @@ fn inner_command(cmd: &str, s: &mut State, cfg: &MockConfig) -> Vec<Out> {
     if cmd == "jdev/sps/enablebinstatusupdate" {
         s.enables += 1;
         let mut out = vec![Out::Text(ll(cmd, 200, json!("")))];
+        if let Some(flood) = cfg.flood {
+            out.extend(flood_tables(flood));
+        }
         if !cfg.initial_states.is_empty() {
             let mut payload = Vec::new();
             for (uuid, value) in &cfg.initial_states {

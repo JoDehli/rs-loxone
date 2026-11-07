@@ -53,6 +53,35 @@ cargo clippy --all-targets --features mock,cli -- -D warnings
 cargo test --features mock
 ```
 
+### Load test (optional)
+
+`tests/load_receive.rs` sends a long run of state updates from the mock and checks that
+each one arrives once and in order. It is ignored, so a normal test run skips it. Run it
+with `--release` to get meaningful numbers:
+
+```
+cargo test --release --features mock --test load_receive -- --ignored --nocapture
+```
+
+Settings, as environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLOOD_RECORDS` | 1000000 | records to send |
+| `FLOOD_PER_TABLE` | 1000 | records per table (one event each) |
+| `FLOOD_CALLBACK_US` | 0 | sleep per table in the callback, to simulate a slow callback |
+
+Example, one record per event and a slower callback:
+
+```
+FLOOD_PER_TABLE=1 FLOOD_RECORDS=200000 FLOOD_CALLBACK_US=10 \
+  cargo test --release --features mock --test load_receive -- --ignored --nocapture
+```
+
+It prints the received count, missing and out-of-order records, the throughput and the
+largest backlog. The mock and the client run on the same machine, so the numbers show
+this machine, not a network or a real Miniserver.
+
 ### Live tests
 
 The tests in `tests/live/` talk to a real Miniserver. They are ignored by default, so
