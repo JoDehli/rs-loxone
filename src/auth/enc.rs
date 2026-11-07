@@ -9,7 +9,7 @@
 use aes::Aes256;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use cbc::cipher::block_padding::{NoPadding, Pkcs7};
+use cbc::cipher::block_padding::NoPadding;
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
@@ -89,17 +89,38 @@ impl ControlDecrypter {
         let mut buf = STANDARD
             .decode(body)
             .map_err(|_| AuthError::Decrypt("base64"))?;
-        if buf.is_empty() || buf.len() % AES_BLOCK != 0 {
+        if buf.is_empty() || !buf.len().is_multiple_of(AES_BLOCK) {
             return Err(AuthError::Decrypt("block length"));
         }
         let dec = cbc::Decryptor::<Aes256>::new(&self.aes_key.into(), &self.iv.into());
+        let len = buf.len();
         let plain = dec
-            .decrypt_padded::<Pkcs7>(&mut buf)
+            .decrypt_padded::<NoPadding>(&mut buf[..len])
             .map_err(|_| AuthError::Decrypt("padding"))?;
+        let plain = strip_padding(plain);
         let text = std::str::from_utf8(plain).map_err(|_| AuthError::Decrypt("utf-8"))?;
         let text = text.trim_end_matches('\0');
         Ok(strip_salt(text).to_owned())
     }
+}
+
+/// Remove the padding from a decrypted reply. Accepts both PKCS#7 (what this crate
+/// sends and what the reference client expects) and ZeroBytePadding (zeros to the
+/// block boundary, as the Loxone protocol table lists). PKCS#7 is tried first: a valid
+/// tail whose value is `n` (1..=16) repeated `n` times is removed; otherwise trailing
+/// zero bytes are removed.
+fn strip_padding(plain: &[u8]) -> &[u8] {
+    if let Some(&n) = plain.last() {
+        let n = n as usize;
+        if (1..=AES_BLOCK).contains(&n)
+            && n <= plain.len()
+            && plain[plain.len() - n..].iter().all(|&b| b as usize == n)
+        {
+            return &plain[..plain.len() - n];
+        }
+    }
+    let end = plain.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    &plain[..end]
 }
 
 /// Remove the salt prefix from a decrypted control: `salt/<hex>/` or
@@ -270,6 +291,40 @@ mod reveal_tests {
         assert_eq!(
             c.decrypter().reveal(&control).unwrap(),
             "jdev/sps/checkuservisupwd"
+        );
+    }
+
+    /// Same as `reply`, but padded with zero bytes to the block boundary.
+    fn reply_zero_padded(cipher: &EncCipher, plain: &str) -> String {
+        let mut bytes = plain.as_bytes().to_vec();
+        bytes.push(0);
+        while !bytes.len().is_multiple_of(AES_BLOCK) {
+            bytes.push(0);
+        }
+        let mut buf = bytes;
+        let enc = cbc::Encryptor::<aes::Aes256>::new(&cipher.aes_key.into(), &cipher.iv.into());
+        let len = buf.len();
+        enc.encrypt_padded::<NoPadding>(&mut buf, len).unwrap();
+        format!("jdev/sys/enc/{}", STANDARD.encode(buf))
+    }
+
+    #[test]
+    fn reveals_zero_padded_reply() {
+        let c = cipher();
+        // 16 bytes exactly, so the zero padding is a full extra block of zeros.
+        for plain in ["refreshjwt/abc/admin", "jdev/sps/io/uuid/on", "x"] {
+            let control = reply_zero_padded(&c, plain);
+            assert_eq!(c.decrypter().reveal(&control).unwrap(), plain);
+        }
+    }
+
+    #[test]
+    fn reveals_zero_padded_reply_after_salt() {
+        let c = cipher();
+        let control = reply_zero_padded(&c, "salt/0a0b/jdev/sps/io/uuid/on");
+        assert_eq!(
+            c.decrypter().reveal(&control).unwrap(),
+            "jdev/sps/io/uuid/on"
         );
     }
 
