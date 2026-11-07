@@ -16,11 +16,22 @@ token fresh. It is a library (crate `rs_loxone`) and comes with a command line p
 Connect to your Miniserver and watch what it sends:
 
 ```
-cargo run --bin rs-loxone
+cargo run --features cli --bin rs-loxone
 ```
 
 It asks for the address (empty = search the network), the user and the password. See
 [The command line program](#the-command-line-program) for arguments and options.
+
+## Install as a library
+
+Requires Rust 1.95 or newer.
+
+```toml
+[dependencies]
+rs-loxone = "0.1"
+```
+
+The command line program is an optional feature: `cargo install rs-loxone --features cli`.
 
 ## Build and test
 
@@ -39,8 +50,8 @@ LOX_HOST=http://<ip>:<port> cargo test --test live_gen1 -- --ignored --nocapture
 ## The command line program
 
 ```
-cargo run --bin rs-loxone                     # asks for address, user and password
-cargo run --bin rs-loxone -- 192.168.1.10:8080 admin
+cargo run --features cli --bin rs-loxone                     # asks for address, user and password
+cargo run --features cli --bin rs-loxone -- 192.168.1.10:8080 admin
 ```
 
 - Leave the address empty to search the local network (Loxone discovery).

@@ -5,9 +5,34 @@ members = ["loxone-mock"]
 name = "rs-loxone"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
+description = "Low-level async client for the Loxone Miniserver: login, state updates, commands, reconnects."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JoDehli/rs-loxone"
+readme = "README.md"
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+    "/src/**",
+    "/tests/**",
+]
+keywords = ["loxone", "miniserver", "smart-home", "async", "tokio"]
+categories = ["network-programming", "api-bindings"]
+
+[features]
+# The rs-loxone command line program (needs the password prompt library).
+cli = ["dep:rpassword"]
+
+[[bin]]
+name = "rs-loxone"
+path = "src/bin/rs-loxone.rs"
+required-features = ["cli"]
 
 [dependencies]
-rpassword = "7.5.4"
+rpassword = { version = "7.5.4", optional = true }
 aes = "0.9.4"
 base64 = "0.23.1"
 cbc = "0.2.1"
