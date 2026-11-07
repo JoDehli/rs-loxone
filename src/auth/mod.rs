@@ -90,6 +90,9 @@ pub enum AuthError {
     #[error("invalid token: {0}")]
     InvalidToken(String),
     /// The certificate could not be read or has no RSA public key.
+    #[error("cannot decrypt a reply: {0}")]
+    Decrypt(&'static str),
+
     #[error("invalid certificate: {0}")]
     InvalidCertificate(String),
 }

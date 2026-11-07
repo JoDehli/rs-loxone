@@ -10,7 +10,7 @@ use tokio::time::Instant;
 use crate::auth::AuthError;
 use crate::auth::KeyAndSalt;
 use crate::auth::commands;
-use crate::auth::enc::EncCipher;
+use crate::auth::enc::{ControlDecrypter, EncCipher};
 use crate::auth::hash::{credential_hash, token_hash};
 use crate::auth::keyexchange::SessionKey;
 use crate::auth::reply::{ensure_success, parse_key2, parse_token};
@@ -18,6 +18,7 @@ use crate::auth::token::{TokenState, loxone_seconds};
 use crate::protocol::ll::LlResponse;
 use crate::protocol::message::Message;
 use crate::session::frames::FramePairer;
+use crate::session::reader::reveal_control;
 use crate::session::{SessionConfig, SessionError};
 use crate::transport::ws::WsReceiver;
 
@@ -67,9 +68,18 @@ async fn send_enc(
 }
 
 /// What one decoded message means while waiting for a login reply.
-fn match_reply(message: Message, needle: &str) -> Result<Option<LlResponse>, SessionError> {
+fn match_reply(
+    message: Message,
+    needle: &str,
+    decrypt: Option<&ControlDecrypter>,
+) -> Result<Option<LlResponse>, SessionError> {
     match message {
-        Message::Text(ll) if ll.control.contains(needle) => Ok(Some(ll)),
+        Message::Text(mut ll) => {
+            if let Some(d) = decrypt {
+                reveal_control(d, &mut ll);
+            }
+            Ok((ll.control.contains(needle)).then_some(ll))
+        }
         Message::OutOfService => Err(SessionError::OutOfService),
         _ => Ok(None),
     }
@@ -81,6 +91,7 @@ pub async fn await_reply(
     rx: &mut WsReceiver,
     pairer: &mut FramePairer,
     needle: &str,
+    decrypt: Option<&ControlDecrypter>,
 ) -> Result<LlResponse, SessionError> {
     let deadline = Instant::now() + REPLY_TIMEOUT;
     loop {
@@ -90,7 +101,7 @@ pub async fn await_reply(
             .ok_or(SessionError::Closed)?;
         match pairer.push(frame) {
             Ok(Some(message)) => {
-                if let Some(ll) = match_reply(message, needle)? {
+                if let Some(ll) = match_reply(message, needle, decrypt)? {
                     return Ok(ll);
                 }
             }
@@ -125,12 +136,13 @@ pub async fn login(
     out.send(session_key.keyexchange_command().to_owned())
         .await
         .map_err(|_| SessionError::Closed)?;
-    ensure_200(&await_reply(rx, &mut pairer, "keyexchange").await?)?;
+    ensure_200(&await_reply(rx, &mut pairer, "keyexchange", None).await?)?;
 
     // 2. Key and salt for the user (encrypted, chain starts here).
     let mut cipher = EncCipher::new(&session_key, random_salt());
+    let decrypt = cipher.decrypter();
     send_enc(out, &mut cipher, &commands::get_key2(user)).await?;
-    let k2 = await_reply(rx, &mut pairer, "getkey2").await?;
+    let k2 = await_reply(rx, &mut pairer, "getkey2", Some(&decrypt)).await?;
     ensure_200(&k2)?;
     let key2 = parse_key2(&k2)?;
 
@@ -140,7 +152,7 @@ pub async fn login(
     {
         let hash = token_hash(stored.token().expose(), &key2)?;
         send_enc(out, &mut cipher, &commands::auth_with_token(&hash, user)).await?;
-        let r = await_reply(rx, &mut pairer, "withtoken").await?;
+        let r = await_reply(rx, &mut pairer, "withtoken", Some(&decrypt)).await?;
         match r.code {
             200 => {
                 let token = stored.clone();
@@ -165,7 +177,7 @@ pub async fn login(
         &commands::request_token(version, &pw_hash, user),
     )
     .await?;
-    let tr = await_reply(rx, &mut pairer, verb).await?;
+    let tr = await_reply(rx, &mut pairer, verb, Some(&decrypt)).await?;
     ensure_200(&tr)?;
     let token = parse_token(&tr)?;
     finish(out, cipher, session_key, key2, token, false).await
@@ -201,14 +213,14 @@ mod tests {
 
     #[test]
     fn matching_text_is_the_reply() {
-        let got = match_reply(text("jdev/sys/getkey2/admin"), "getkey2").unwrap();
+        let got = match_reply(text("jdev/sys/getkey2/admin"), "getkey2", None).unwrap();
         assert!(got.is_some());
     }
 
     #[test]
     fn other_text_is_skipped() {
         assert!(
-            match_reply(text("jdev/sys/getjwt"), "getkey2")
+            match_reply(text("jdev/sys/getjwt"), "getkey2", None)
                 .unwrap()
                 .is_none()
         );
@@ -217,7 +229,7 @@ mod tests {
     #[test]
     fn out_of_service_ends_the_wait() {
         assert!(matches!(
-            match_reply(Message::OutOfService, "getkey2"),
+            match_reply(Message::OutOfService, "getkey2", None),
             Err(SessionError::OutOfService)
         ));
     }

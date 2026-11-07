@@ -59,3 +59,21 @@ async fn normal_commands_still_work_after_a_secured_command() {
     session.send_command("jdev/sps/io/AAA/on").await.unwrap();
     assert_eq!(wait_count(&mock, "jdev/sps/io", 1).await, 1);
 }
+
+#[tokio::test]
+async fn visualization_code_check_answers_without_running_anything() {
+    let mock = start(MockConfig::default());
+    let session = connect(&mock).await;
+    assert!(session.check_visu_code("1234").await.unwrap());
+    assert!(!session.check_visu_code("0000").await.unwrap());
+    assert_eq!(
+        wait_count(&mock, "jdev/sps/checkuservisupwd", 2).await,
+        2,
+        "both checks reached the Miniserver"
+    );
+    assert_eq!(
+        wait_count(&mock, "jdev/sps/ios", 1).await,
+        0,
+        "no command was executed"
+    );
+}

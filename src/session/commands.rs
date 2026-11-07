@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::auth::enc::EncCipher;
+use crate::auth::enc::{ControlDecrypter, EncCipher};
 use crate::protocol::ll::LlResponse;
 use crate::session::login::random_salt;
 use crate::session::reader::{Waiter, WaiterSlot};
@@ -110,6 +110,8 @@ pub(crate) struct Shared {
     pub request_lock: Mutex<()>,
     /// Events waiting for the callbacks (for monitoring).
     pub backlog: Arc<Backlog>,
+    /// Decrypts the replies to encrypted commands. Holds no salt state.
+    pub decrypt: ControlDecrypter,
     /// Set to `true` to end the session (writer closes, reader reports).
     stop: tokio::sync::watch::Sender<bool>,
     /// Why the session is ending. Set once, before `stop` becomes `true`.
@@ -147,8 +149,10 @@ impl Shared {
         stop: tokio::sync::watch::Sender<bool>,
         backlog: Arc<Backlog>,
     ) -> Arc<Self> {
+        let decrypt = cipher.decrypter();
         Arc::new(Self {
             backlog,
+            decrypt,
             out,
             core: Mutex::new(Core::new(cipher)),
             events,

@@ -5,6 +5,8 @@
 //! 3. `jdev/sps/ios/<hash>/<uuid>/<value>` (encrypted). Code 200 means the code was right.
 //!
 //! The visualization key is used for this call only. It never replaces the session key.
+//!
+//! [`Session::check_visu_code`] checks a code the same way, without sending a command.
 
 use crate::auth::commands;
 use crate::auth::hash::visual_hash;
@@ -42,6 +44,35 @@ impl Session {
             200 => Ok(()),
             500 => Err(SessionError::WrongVisuCode),
             _ => ensure_200(&reply),
+        }
+    }
+
+    /// Check a visualization code without running anything on the Miniserver.
+    /// Returns `Ok(true)` if the code is right, `Ok(false)` if it is wrong.
+    pub async fn check_visu_code(&self, code: &str) -> Result<bool, SessionError> {
+        let vis_reply = self
+            .shared
+            .request(&commands::get_visu_salt(&self.username), &["getvisusalt"])
+            .await?;
+        ensure_200(&vis_reply)?;
+        let vis = parse_key2(&vis_reply)?;
+
+        let hash = visual_hash(code, &vis)?;
+        let reply = self
+            .shared
+            .request(&commands::check_visu_password(&hash), &["checkuservisupwd"])
+            .await?;
+        // The answer is code 200 either way; the value says "1" (right) or "0" (wrong).
+        ensure_200(&reply)?;
+        match reply.value.trim() {
+            "1" => Ok(true),
+            "0" => Ok(false),
+            other => Err(SessionError::Protocol(
+                crate::protocol::ProtocolError::Malformed(format!(
+                    "unexpected visualization check value of {} bytes",
+                    other.len()
+                )),
+            )),
         }
     }
 }

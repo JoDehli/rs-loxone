@@ -42,6 +42,18 @@ fn claim(slot: &WaiterSlot, ll: &LlResponse) -> bool {
     matches
 }
 
+/// Replies to encrypted commands carry `jdev/sys/enc/<base64>` as the control. Replace it
+/// with the plain control, so the reply can be matched by command name.
+pub(crate) fn reveal_control(decrypt: &crate::auth::enc::ControlDecrypter, ll: &mut LlResponse) {
+    if !ll.control.starts_with("jdev/sys/enc/") {
+        return;
+    }
+    match decrypt.reveal(&ll.control) {
+        Ok(control) => ll.control = control,
+        Err(err) => eprintln!("rs-loxone: skipping a reply that does not decrypt: {err}"),
+    }
+}
+
 /// Map a decoded message to an event. Keepalive replies produce no event.
 pub fn map_message(message: Message) -> Option<Event> {
     Some(match message {
@@ -107,7 +119,10 @@ pub(crate) async fn run(
             }
             frame = receiver.next_frame() => match frame {
                 Ok(Some(frame)) => match pairer.push(frame) {
-                    Ok(Some(message)) => {
+                    Ok(Some(mut message)) => {
+                        if let Message::Text(ll) = &mut message {
+                            reveal_control(&shared.decrypt, ll);
+                        }
                         if let Message::Text(ll) = &message
                             && claim(&shared.waiter, ll)
                         {

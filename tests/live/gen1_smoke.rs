@@ -412,3 +412,140 @@ async fn gen1_refresh_with_getkey() {
     }
     let _ = tx.close().await;
 }
+
+/// One value from the credentials file. Never printed.
+fn env_value(key: &str) -> String {
+    let path = std::env::var("LOX_ENV_FILE").unwrap_or_else(|_| {
+        format!(
+            "{}/.config/rs-loxone/miniserver.env",
+            std::env::var("HOME").unwrap()
+        )
+    });
+    let text = std::fs::read_to_string(&path).expect("credentials file");
+    text.lines()
+        .find_map(|l| l.strip_prefix(&format!("{key}=")))
+        .map(|v| v.trim().to_owned())
+        .unwrap_or_else(|| panic!("{key} missing in the credentials file"))
+}
+
+/// Check the visualization code with `jdev/sps/checkuservisupwd`. Runs nothing on the
+/// Miniserver. Only the two answers are printed, never the code itself.
+#[tokio::test]
+#[ignore = "live: needs the Gen 1 Miniserver, credentials and LOX_VISU_CODE"]
+async fn gen1_visu_code_check() {
+    let (user, pass) = load_credentials();
+    let visu_code = env_value("LOX_VISU_CODE");
+    let cfg = rs_loxone::session::SessionConfig::new(
+        Endpoint::parse(&host()).unwrap(),
+        user,
+        rs_loxone::auth::Secret::new(pass),
+    );
+    let handler = rs_loxone::session::AsyncHandler(|_e: rs_loxone::session::Event| async {});
+    let session = rs_loxone::session::Session::connect(cfg, handler)
+        .await
+        .expect("login");
+
+    let wrong = session
+        .check_visu_code("0000")
+        .await
+        .expect("check wrong code");
+    println!("wrong code 0000 accepted: {wrong}");
+    let right = session
+        .check_visu_code(&visu_code)
+        .await
+        .expect("check code");
+    println!("configured code accepted: {right}");
+    session.close().await;
+
+    assert!(!wrong, "a wrong code must be refused");
+    assert!(right, "the configured code must be accepted");
+}
+
+/// Arms the alarm with `delayedon/0` (as the Home Assistant integration does), watches its
+/// states for 30 s, then disarms it with `off` in any case. Needs LOX_ALARM_UUID and a comma
+/// separated LOX_ALARM_STATES list (UUIDs of its states). Only the states are printed.
+#[tokio::test]
+#[ignore = "live: switches the real alarm on and off"]
+async fn gen1_alarm_arm_then_disarm() {
+    let (user, pass) = load_credentials();
+    let visu = env_value("LOX_VISU_CODE");
+    let alarm = std::env::var("LOX_ALARM_UUID").expect("LOX_ALARM_UUID");
+    let states: Vec<rs_loxone::protocol::Uuid> = std::env::var("LOX_ALARM_STATES")
+        .expect("LOX_ALARM_STATES")
+        .split(',')
+        .map(|u| u.trim().parse().expect("state uuid"))
+        .collect();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handler = rs_loxone::session::AsyncHandler(move |e: rs_loxone::session::Event| {
+        let tx = tx.clone();
+        async move {
+            if let rs_loxone::session::Event::ValueStates(values) = e {
+                let _ = tx.send(values);
+            }
+        }
+    });
+    let cfg = rs_loxone::session::SessionConfig::new(
+        Endpoint::parse(&host()).unwrap(),
+        user,
+        rs_loxone::auth::Secret::new(pass),
+    );
+    let session = rs_loxone::session::Session::connect(cfg, handler)
+        .await
+        .expect("login");
+
+    let mut last: Vec<Option<f64>> = vec![None; states.len()];
+    let mut show =
+        |rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<(rs_loxone::protocol::Uuid, f64)>>,
+         label: &str| {
+            while let Ok(values) = rx.try_recv() {
+                for (uuid, value) in values {
+                    if let Some(i) = states.iter().position(|s| *s == uuid) {
+                        last[i] = Some(value);
+                    }
+                }
+            }
+            println!("{label}: {:?}", last);
+        };
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    show(&mut rx, "before");
+
+    let arm_value = std::env::var("LOX_ARM_VALUE").unwrap_or_else(|_| "delayedon/0".into());
+    let arm = session.send_secured(&alarm, &arm_value, &visu).await;
+    println!("arm ({arm_value}): {arm:?}");
+    for i in 1..=6 {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        show(&mut rx, &format!("after {}s", i * 5));
+    }
+
+    let off = session.send_secured(&alarm, "off", &visu).await;
+    println!("disarm (off): {off:?}");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    show(&mut rx, "after disarm");
+
+    session.close().await;
+    arm.expect("arm command accepted");
+    off.expect("disarm command accepted");
+}
+
+/// Sends `off` with a wrong visualization code. The alarm is disarmed, so this changes
+/// nothing; it only shows what the Miniserver answers for a refused command.
+#[tokio::test]
+#[ignore = "live: sends a command with a wrong code"]
+async fn gen1_alarm_wrong_code_off() {
+    let (user, pass) = load_credentials();
+    let alarm = std::env::var("LOX_ALARM_UUID").expect("LOX_ALARM_UUID");
+    let cfg = rs_loxone::session::SessionConfig::new(
+        Endpoint::parse(&host()).unwrap(),
+        user,
+        rs_loxone::auth::Secret::new(pass),
+    );
+    let handler = rs_loxone::session::AsyncHandler(|_e: rs_loxone::session::Event| async {});
+    let session = rs_loxone::session::Session::connect(cfg, handler)
+        .await
+        .expect("login");
+    let result = session.send_secured(&alarm, "off", "0000").await;
+    println!("off with wrong code: {result:?}");
+    session.close().await;
+}

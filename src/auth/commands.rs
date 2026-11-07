@@ -99,6 +99,11 @@ pub fn secured_command(visual_hash: &str, uuid: &str, value: &str) -> String {
     format!("jdev/sps/ios/{visual_hash}/{uuid}/{value}")
 }
 
+/// `jdev/sps/checkuservisupwd/<hash>`: check a visualization code without running anything.
+pub fn check_visu_password(visual_hash: &str) -> String {
+    format!("jdev/sps/checkuservisupwd/{visual_hash}")
+}
+
 /// `jdev/sps/enablebinstatusupdate`: start receiving state updates.
 pub fn enable_updates() -> &'static str {
     "jdev/sps/enablebinstatusupdate"

@@ -20,7 +20,7 @@ use aes::Aes256;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use cbc::cipher::block_padding::NoPadding;
-use cbc::cipher::{BlockModeDecrypt, KeyIvInit};
+use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
 use hmac::{Hmac, KeyInit, Mac};
 use percent_encoding::percent_decode_str;
 use rsa::pkcs8::DecodePrivateKey;
@@ -42,6 +42,15 @@ const CA_PEM: &str = include_str!("../fixtures/test_ca.pem");
 /// Private key matching the certificate (test only).
 const KEY_PEM: &str = include_str!("../fixtures/test_key.pem");
 
+/// A fake alarm control that answers secured commands and reports its `armed` state.
+#[derive(Debug, Clone)]
+pub struct FakeAlarm {
+    /// Device UUID (text form) that the commands are addressed to.
+    pub uuid: String,
+    /// Raw bytes of the `armed` state, as they appear in value-state tables.
+    pub armed_state: [u8; 16],
+}
+
 /// Behaviour and fixed test values of the mock.
 #[derive(Clone, Debug)]
 pub struct MockConfig {
@@ -59,12 +68,16 @@ pub struct MockConfig {
     pub initial_states: Vec<([u8; 16], f64)>,
     /// If set, close the WebSocket with this code right after `enablebinstatusupdate`.
     pub close_after_enable: Option<u16>,
+    /// With `close_after_enable`: only close for the first N enables (None = every time).
+    pub close_first_enables: Option<u32>,
     /// Commands (inner text, prefix match) that the mock records but never answers.
     pub mute_prefixes: Vec<String>,
     /// Lifetime of issued tokens, in seconds from now.
     pub token_lifetime_secs: u64,
     /// Answer refreshjwt with 401 (refresh refused).
     pub refuse_refresh: bool,
+    /// A fake alarm for secured commands (`on`, `on/0`, `on/1`, `off`).
+    pub alarm: Option<FakeAlarm>,
 }
 
 impl Default for MockConfig {
@@ -77,15 +90,21 @@ impl Default for MockConfig {
             visu_code: "1234".into(),
             initial_states: vec![],
             close_after_enable: None,
+            close_first_enables: None,
             mute_prefixes: vec![],
             token_lifetime_secs: 86_400,
             refuse_refresh: false,
+            alarm: None,
         }
     }
 }
 
 #[derive(Default)]
 struct State {
+    /// Armed state of the fake alarm (1.0 or 0.0).
+    alarm_armed: f64,
+    /// How many times `enablebinstatusupdate` was received, over all connections.
+    enables: u32,
     aes_key: Option<[u8; 32]>,
     iv: Option<[u8; 16]>,
     /// Last salt the device has seen in the enc chain.
@@ -374,6 +393,16 @@ enum Out {
     Close(u16),
 }
 
+/// One value-state table with a single entry, as the Miniserver pushes it.
+fn value_frame(uuid: &[u8; 16], value: f64) -> Vec<Out> {
+    let mut payload = Vec::with_capacity(24);
+    payload.extend_from_slice(uuid);
+    payload.extend_from_slice(&value.to_le_bytes());
+    let mut header = vec![3u8, 2, 0, 0];
+    header.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    vec![Out::Binary(header), Out::Binary(payload)]
+}
+
 fn ll(control: &str, code: u16, value: Value) -> String {
     json!({"LL": {"control": control, "code": code.to_string(), "value": value}}).to_string()
 }
@@ -406,7 +435,15 @@ fn answer(text: &str, st: &Arc<Mutex<State>>, cfg: &MockConfig) -> Vec<Out> {
             // Broken salt chain: the device refuses (401, encrypted request failed).
             return vec![Out::Text(ll(text, 401, json!("")))];
         };
-        return inner_command(&inner, &mut s, cfg);
+        let outs = inner_command(&inner, &mut s, cfg);
+        // Like the device: replies to encrypted commands carry an encrypted control.
+        return outs
+            .into_iter()
+            .map(|out| match out {
+                Out::Text(text) => Out::Text(encrypt_text_reply(&text, &key, &iv)),
+                other => other,
+            })
+            .collect();
     }
     s.seen.push("unknown".into());
     vec![Out::Text(ll(text, 404, json!("")))]
@@ -443,6 +480,26 @@ fn key_exchange(b64: &str, s: &mut State) -> Vec<Out> {
         200,
         json!(""),
     ))]
+}
+
+/// Replace the control of a text reply with `jdev/sys/enc/<base64>` of
+/// `salt/<hex>/<control>\0`, AES-256-CBC with PKCS#7 padding (as the device sends it).
+fn encrypt_text_reply(text: &str, key: &[u8; 32], iv: &[u8; 16]) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(text) else {
+        return text.to_string();
+    };
+    let Some(control) = value["LL"]["control"].as_str().map(str::to_owned) else {
+        return text.to_string();
+    };
+    let mut buf = format!("nextSalt/0a0b0c0d/0e0f1011/{control}\0").into_bytes();
+    let pad = 16 - buf.len() % 16;
+    buf.extend(std::iter::repeat_n(pad as u8, pad));
+    let len = buf.len();
+    let enc = cbc::Encryptor::<Aes256>::new(&(*key).into(), &(*iv).into());
+    enc.encrypt_padded::<NoPadding>(&mut buf, len)
+        .expect("whole blocks");
+    value["LL"]["control"] = Value::String(format!("jdev/sys/enc/{}", STANDARD.encode(&buf)));
+    value.to_string()
 }
 
 /// Percent-decode and base64-decode an enc payload, then AES-256-CBC decrypt and unpad.
@@ -547,6 +604,7 @@ fn inner_command(cmd: &str, s: &mut State, cfg: &MockConfig) -> Vec<Out> {
     }
 
     if cmd == "jdev/sps/enablebinstatusupdate" {
+        s.enables += 1;
         let mut out = vec![Out::Text(ll(cmd, 200, json!("")))];
         if !cfg.initial_states.is_empty() {
             let mut payload = Vec::new();
@@ -559,7 +617,8 @@ fn inner_command(cmd: &str, s: &mut State, cfg: &MockConfig) -> Vec<Out> {
             out.push(Out::Binary(header));
             out.push(Out::Binary(payload));
         }
-        if let Some(code) = cfg.close_after_enable {
+        let close_now = cfg.close_first_enables.is_none_or(|n| s.enables <= n);
+        if let (Some(code), true) = (cfg.close_after_enable, close_now) {
             out.push(Out::Close(code));
         }
         return out;
@@ -595,11 +654,43 @@ fn inner_command(cmd: &str, s: &mut State, cfg: &MockConfig) -> Vec<Out> {
         ))];
     }
 
-    if let Some(rest) = cmd.strip_prefix("jdev/sps/ios/") {
-        let hash = rest.split('/').next().unwrap_or("");
+    if let Some(rest) = cmd.strip_prefix("jdev/sps/checkuservisupwd/") {
+        // Checks the code and runs nothing.
+        // The device answers 200 either way; the value is "1" (right) or "0" (wrong).
         let expected = visual_hash(&cfg.visu_code, &s.visu_key, &s.visu_salt);
-        let code = if hash == expected { 200 } else { 500 };
-        return vec![Out::Text(ll("jdev/sps/ios", code, json!("")))];
+        let value = if rest == expected { "1" } else { "0" };
+        return vec![Out::Text(ll(
+            "jdev/sps/checkuservisupwd",
+            200,
+            json!(value),
+        ))];
+    }
+
+    if let Some(rest) = cmd.strip_prefix("jdev/sps/ios/") {
+        // rest = <hash>/<uuid>/<value>; the value may itself contain '/'.
+        let mut parts = rest.splitn(3, '/');
+        let hash = parts.next().unwrap_or("");
+        let uuid = parts.next().unwrap_or("");
+        let value = parts.next().unwrap_or("");
+        let expected = visual_hash(&cfg.visu_code, &s.visu_key, &s.visu_salt);
+        if hash != expected {
+            return vec![Out::Text(ll("jdev/sps/ios", 500, json!("")))];
+        }
+        let mut out = vec![Out::Text(ll("jdev/sps/ios", 200, json!("")))];
+        if let Some(alarm) = &cfg.alarm
+            && alarm.uuid == uuid
+        {
+            let armed = match value {
+                "on" | "on/0" | "on/1" => Some(1.0),
+                "off" => Some(0.0),
+                _ => None,
+            };
+            if let Some(armed) = armed {
+                s.alarm_armed = armed;
+                out.extend(value_frame(&alarm.armed_state, armed));
+            }
+        }
+        return out;
     }
 
     if let Some(rest) = cmd.strip_prefix("jdev/sys/checktoken/") {

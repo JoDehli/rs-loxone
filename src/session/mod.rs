@@ -269,6 +269,19 @@ impl Session {
         self.shared.request(command, &[needle]).await
     }
 
+    /// Resolve when the session has ended, with the reason. Used by the supervisor.
+    pub async fn wait_ended(&self) -> DisconnectReason {
+        let mut stop = self.shared.stop_signal();
+        while !*stop.borrow() {
+            if stop.changed().await.is_err() {
+                break;
+            }
+        }
+        self.shared
+            .stop_reason()
+            .unwrap_or(DisconnectReason::Requested)
+    }
+
     /// The token in use (a copy; treat it as a secret).
     pub fn token(&self) -> TokenState {
         self.token.lock().expect("token lock poisoned").clone()

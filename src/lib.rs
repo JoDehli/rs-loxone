@@ -8,4 +8,5 @@
 pub mod auth;
 pub mod protocol;
 pub mod session;
+pub mod supervisor;
 pub mod transport;

@@ -42,6 +42,14 @@ pub enum Event {
     CommandDropped { id: u64, age: Duration },
     /// Token renewal failed too often; the session ends.
     AuthFailed { reason: String },
+    /// Supervisor: waiting before connection attempt `attempt`. Not sent by a session.
+    Reconnecting {
+        attempt: u32,
+        wait: Duration,
+        reason: String,
+    },
+    /// Supervisor: reconnecting has stopped for good. No connection follows.
+    GaveUp { reason: String },
     /// The session ended. This is always the last event.
     Disconnected { reason: DisconnectReason },
 }
