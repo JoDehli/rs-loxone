@@ -301,16 +301,25 @@ async fn main() {
         }
     };
 
-    // The structure file gives the names of the controls and their states.
+    // The structure file gives the names of the controls and their states. A wrong address or
+    // port gets no answer, so this tries only twice and says what to check.
+    println!("connecting to {host} ...");
     let structure = match HttpBootstrap::new(BootstrapConfig {
         endpoint: endpoint.clone(),
         username: user.clone(),
         password: Secret::new(password.clone()),
         tls: TlsOptions::default(),
-        retry: RetryPolicy::default(),
+        retry: RetryPolicy {
+            max_attempts: 2,
+            base: Duration::from_secs(1),
+            max: Duration::from_secs(2),
+        },
         connect_addr: None,
     }) {
-        Ok(http) => match http.structure_file().await {
+        Ok(http) => match tokio::time::timeout(Duration::from_secs(15), http.structure_file())
+            .await
+            .unwrap_or_else(|_| Err(TransportError::Protocol("no reply within 15 s".into())))
+        {
             Ok(file) => match Structure::parse(&file.bytes) {
                 Ok(structure) => structure,
                 Err(err) => {
@@ -323,7 +332,10 @@ async fn main() {
                 return;
             }
             Err(err) => {
-                eprintln!("no structure file: {err}");
+                eprintln!("no answer from {host}: {err}");
+                eprintln!(
+                    "check the address and the port (the port is part of the address, e.g. :8080)"
+                );
                 return;
             }
         },
