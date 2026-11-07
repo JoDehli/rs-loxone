@@ -1,3 +1,4 @@
+#![cfg(feature = "mock")]
 //! Checks that the mock Miniserver behaves as the device does, using the crate's own
 //! pieces (transport, auth, protocol) as the client.
 
@@ -18,7 +19,7 @@ use rs_loxone::transport::tls::TlsOptions;
 use rs_loxone::transport::url::Endpoint;
 use rs_loxone::transport::ws::{RawFrame, WsOptions, connect};
 
-use loxone_mock::{MockConfig, start};
+use rs_loxone::mock::{MockConfig, start};
 
 const USER: &str = "admin";
 const PASSWORD: &str = "s3cret";

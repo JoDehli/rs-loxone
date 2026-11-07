@@ -1,9 +1,10 @@
+#![cfg(feature = "mock")]
 //! Gen 2 style connection: HTTPS and WSS through the session, against the TLS mock.
 
 use std::time::Duration;
 
-use loxone_mock::{MockConfig, start_tls, test_certificate_pem};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{MockConfig, start_tls, test_certificate_pem};
 use rs_loxone::session::{AsyncHandler, Event, Session, SessionConfig, SessionError};
 use rs_loxone::transport::TransportError;
 use rs_loxone::transport::tls::TlsOptions;
@@ -27,7 +28,7 @@ fn trusted() -> TlsOptions {
     }
 }
 
-async fn wait_count(mock: &loxone_mock::Mock, name: &str, want: usize) -> usize {
+async fn wait_count(mock: &rs_loxone::mock::Mock, name: &str, want: usize) -> usize {
     for _ in 0..100 {
         let n = mock.seen().iter().filter(|s| s.as_str() == name).count();
         if n >= want {
@@ -73,7 +74,7 @@ async fn login_commands_and_structure_work_over_https_and_wss() {
     assert!(file.final_url.starts_with("https://"), "{}", file.final_url);
     assert_eq!(
         session.structure_version().await.unwrap(),
-        loxone_mock::LAST_MODIFIED
+        rs_loxone::mock::LAST_MODIFIED
     );
 }
 

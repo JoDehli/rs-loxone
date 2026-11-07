@@ -36,11 +36,11 @@ use tungstenite::{Message, accept_hdr};
 pub const LAST_MODIFIED: &str = "2026-01-01 10:00:00";
 
 /// Certificate served by `/jdev/sys/getPublicKey` (test only).
-const CERT_PEM: &str = include_str!("../fixtures/test_cert.pem");
+const CERT_PEM: &str = include_str!("../../tests/fixtures/test_cert.pem");
 /// CA that signed the test certificate (test only). Clients trust this.
-const CA_PEM: &str = include_str!("../fixtures/test_ca.pem");
+const CA_PEM: &str = include_str!("../../tests/fixtures/test_ca.pem");
 /// Private key matching the certificate (test only).
-const KEY_PEM: &str = include_str!("../fixtures/test_key.pem");
+const KEY_PEM: &str = include_str!("../../tests/fixtures/test_key.pem");
 
 /// A fake alarm control that answers secured commands and reports its `armed` state.
 #[derive(Debug, Clone)]

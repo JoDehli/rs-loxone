@@ -1,9 +1,10 @@
+#![cfg(feature = "mock")]
 //! Closing a session: last event, socket closed, and closing after AuthFailed.
 
 use std::time::Duration;
 
-use loxone_mock::{Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::session::{
     AsyncHandler, DisconnectReason, Event, RefreshPolicy, Session, SessionConfig,
 };

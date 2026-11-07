@@ -8,6 +8,8 @@
 
 pub mod auth;
 pub mod discover;
+#[cfg(feature = "mock")]
+pub mod mock;
 pub mod protocol;
 pub mod session;
 pub mod structure;

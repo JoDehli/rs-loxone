@@ -1,9 +1,10 @@
+#![cfg(feature = "mock")]
 //! Sending commands on a logged-in session, against the scripted mock.
 
 use std::time::Duration;
 
-use loxone_mock::{Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::session::{AsyncHandler, Event, Session, SessionConfig};
 use rs_loxone::transport::url::Endpoint;
 

@@ -37,8 +37,8 @@ The command line program is an optional feature: `cargo install rs-loxone --feat
 
 ```
 cargo build
-cargo test                       # unit and mock tests, no Miniserver needed
-cargo clippy --all-targets -- -D warnings
+cargo test --features mock       # all tests, no Miniserver needed
+cargo clippy --all-targets --features mock,cli -- -D warnings
 ```
 
 The live tests in `tests/live/` need a real Miniserver and are ignored by default:
@@ -175,5 +175,5 @@ src/supervisor/  reconnects, command queue, auth escalation
 src/structure/   structure file helpers
 src/discover.rs  network discovery
 src/bin/         the rs-loxone program
-loxone-mock/     a scripted fake Miniserver used by the tests
+src/mock/        a scripted fake Miniserver for tests (feature `mock`)
 ```

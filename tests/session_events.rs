@@ -1,11 +1,12 @@
+#![cfg(feature = "mock")]
 //! Events and callbacks: order, sync and async handlers, end of connection, and a
 //! blocked callback that must not stop the connection from being set up.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use loxone_mock::{Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::protocol::uuid::Uuid;
 use rs_loxone::session::{
     AsyncHandler, DisconnectReason, Event, Session, SessionConfig, SyncHandler,

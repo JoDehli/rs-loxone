@@ -1,7 +1,8 @@
+#![cfg(feature = "mock")]
 //! Structure file and its version, against the scripted mock.
 
-use loxone_mock::{LAST_MODIFIED, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{LAST_MODIFIED, MockConfig, start};
 use rs_loxone::session::{AsyncHandler, Event, Session, SessionConfig};
 use rs_loxone::transport::url::Endpoint;
 

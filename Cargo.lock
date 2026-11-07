@@ -849,24 +849,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
-name = "loxone-mock"
-version = "0.1.0"
-dependencies = [
- "aes",
- "base64",
- "cbc",
- "hex",
- "hmac",
- "percent-encoding",
- "rsa",
- "rustls",
- "serde_json",
- "sha1",
- "sha2",
- "tungstenite",
-]
-
-[[package]]
 name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1299,7 +1281,6 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
- "loxone-mock",
  "percent-encoding",
  "rand 0.8.8",
  "rcgen",
@@ -1315,6 +1296,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "tungstenite",
  "url",
  "webpki-roots 1.0.11",
  "x509-cert",

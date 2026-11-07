@@ -1,10 +1,11 @@
+#![cfg(feature = "mock")]
 //! The supervisor against the scripted mock Miniserver: reconnects, the outbox, and the
 //! stop rules. These run in real time; the first reconnect waits about 5 s.
 
 use std::time::Duration;
 
-use loxone_mock::{Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::session::{AsyncHandler, DisconnectReason, Event, RefreshPolicy, SessionConfig};
 use rs_loxone::supervisor::outbox::Item;
 use rs_loxone::supervisor::{self, SupervisorHandle};

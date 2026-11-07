@@ -1,9 +1,10 @@
+#![cfg(feature = "mock")]
 //! Multi-step requests: reply slot, serialization, and timeout.
 
 use std::time::Duration;
 
-use loxone_mock::{Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::session::{AsyncHandler, Event, Session, SessionConfig, SessionError};
 use rs_loxone::transport::url::Endpoint;
 

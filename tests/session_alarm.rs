@@ -1,11 +1,12 @@
+#![cfg(feature = "mock")]
 //! A fake alarm control on the mock, with the same commands and answers as the real
 //! alarm: `on/1` arms it, `off` disarms it, a wrong visualization code is refused.
 //! No real Miniserver is involved; the device UUID and state bytes are made up.
 
 use std::time::Duration;
 
-use loxone_mock::{FakeAlarm, Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{FakeAlarm, Mock, MockConfig, start};
 use rs_loxone::protocol::Uuid;
 use rs_loxone::session::{AsyncHandler, Event, Session, SessionConfig, SessionError};
 use rs_loxone::transport::url::Endpoint;

@@ -1,10 +1,11 @@
+#![cfg(feature = "mock")]
 //! Login through `Session::connect` against the scripted mock Miniserver.
 
 use std::time::Duration;
 
-use loxone_mock::{Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
 use rs_loxone::auth::token::TokenState;
+use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::session::AsyncHandler;
 use rs_loxone::session::{Event, Session, SessionConfig, SessionError};
 use rs_loxone::transport::url::Endpoint;

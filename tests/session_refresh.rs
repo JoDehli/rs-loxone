@@ -1,10 +1,11 @@
+#![cfg(feature = "mock")]
 //! Token renewal against the scripted mock: renewal keeps the chain and emits events;
 //! refused renewals end the session with AuthFailed.
 
 use std::time::Duration;
 
-use loxone_mock::{Mock, MockConfig, start};
 use rs_loxone::auth::Secret;
+use rs_loxone::mock::{Mock, MockConfig, start};
 use rs_loxone::session::{DisconnectReason, Event, RefreshPolicy, Session, SessionConfig};
 use rs_loxone::transport::url::Endpoint;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
