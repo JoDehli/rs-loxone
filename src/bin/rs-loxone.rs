@@ -86,6 +86,34 @@ async fn choose_address() -> String {
 }
 
 /// Numbers without noise: `1013`, `3.5`, `0.3333`.
+/// `LOX_TLS_PIN`: the SHA-256 of the Miniserver's certificate (DER), as 64 hex digits.
+fn tls_from_env() -> Result<TlsOptions, String> {
+    let Some(hex) = std::env::var_os("LOX_TLS_PIN") else {
+        return Ok(TlsOptions {
+            trust_on_first_use: std::env::var_os("LOX_TLS_TOFU").is_some(),
+            ..TlsOptions::default()
+        });
+    };
+    let hex = hex.to_string_lossy().trim().to_owned();
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            hex.get(i..i + 2)
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        })
+        .collect::<Option<Vec<u8>>>()
+        .filter(|b| b.len() == 32)
+        .ok_or_else(|| {
+            "LOX_TLS_PIN must be 64 hex digits (SHA-256 of the certificate)".to_string()
+        })?;
+    let mut pin = [0u8; 32];
+    pin.copy_from_slice(&bytes);
+    Ok(TlsOptions {
+        pinned_cert_sha256: Some(pin),
+        ..TlsOptions::default()
+    })
+}
+
 fn format_value(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         format!("{value:.0}")
@@ -267,6 +295,12 @@ async fn main() {
         println!("  USER  user name (asked for if missing)");
         println!("  LOX_PASS  password, to skip the prompt");
         println!("  LOX_TOKEN_FILE  keep the token in this file between runs");
+        println!(
+            "  LOX_TLS_PIN  SHA-256 of the certificate (hex), for https; only this certificate is accepted"
+        );
+        println!(
+            "  LOX_TLS_TOFU  for https: remember the first certificate seen (until the program stops)"
+        );
         println!("  NO_COLOR  set to turn colors off");
         return;
     }
@@ -293,6 +327,13 @@ async fn main() {
         return;
     }
 
+    let tls = match tls_from_env() {
+        Ok(tls) => tls,
+        Err(err) => {
+            eprintln!("{err}");
+            return;
+        }
+    };
     let endpoint = match Endpoint::parse(&host) {
         Ok(endpoint) => endpoint,
         Err(err) => {
@@ -308,7 +349,7 @@ async fn main() {
         endpoint: endpoint.clone(),
         username: user.clone(),
         password: Secret::new(password.clone()),
-        tls: TlsOptions::default(),
+        tls: tls.clone(),
         retry: RetryPolicy {
             max_attempts: 2,
             base: Duration::from_secs(1),
@@ -369,6 +410,7 @@ async fn main() {
 
     // The supervisor connects in the background and reports everything as events.
     let mut cfg = SessionConfig::new(endpoint, user, Secret::new(password));
+    cfg.tls = tls;
     cfg.max_command_age = Duration::from_secs(30);
     if let Some(path) = std::env::var_os("LOX_TOKEN_FILE") {
         println!("token file: {}", std::path::Path::new(&path).display());

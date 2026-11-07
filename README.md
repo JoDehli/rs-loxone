@@ -145,6 +145,11 @@ cargo run --features cli --bin rs-loxone -- 192.168.1.10:8080 admin
 
 - Leave the address empty to search the local network (Loxone discovery).
 - The password is typed without echo. For scripts, set `LOX_PASS` instead.
+- `LOX_TOKEN_FILE=<path>` keeps the token in that file between runs. The next start logs in
+  with it, without the password for the connection (the structure file still needs the
+  password). See [Keeping the token](#keeping-the-token).
+- `LOX_TLS_PIN=<64 hex digits>` accepts only the certificate with this SHA-256 fingerprint,
+  and `LOX_TLS_TOFU=1` remembers the first certificate seen. See [TLS](#tls).
 - Output: time, state name, UUID, value. `NO_COLOR=1` turns the colors off.
 - Press Enter to stop.
 
@@ -191,7 +196,8 @@ Events you will see:
 | `Connected` | Logged in and state updates are on |
 | `ValueStates` / `TextStates` | State changes, as `(uuid, value)` |
 | `Text` | A reply to a command that nobody waited for |
-| `TokenChanged` | A new token (store it if you want to log in without the password) |
+| `LoggedIn { used_stored_token }` | Logged in; `true` if the stored token was used, `false` if the password was used |
+| `TokenChanged` | The token is valid until this time (after a login or a renewal). Store it if you want to log in without the password |
 | `CommandDropped` / `CommandFailed` | A queued command was too old, or the Miniserver refused it |
 | `Reconnecting` / `GaveUp` | The supervisor waits, or has stopped (for example a wrong password) |
 | `Disconnected` | The connection ended; always the last event of a connection |
@@ -233,6 +239,41 @@ Secured commands through the supervisor use `Item::Secured { device_uuid, value,
 ```rust
 let found = rs_loxone::discover::discover(std::time::Duration::from_secs(5)).await?;
 ```
+
+## Keeping the token
+
+Set `SessionConfig::token_file` to a `TokenFile` and the session keeps its token there:
+
+- After every login and every renewal the token is written. The write is atomic (a
+  temporary file, then a rename). On Unix the file is created with mode 0600 and its
+  directory with 0700.
+- At start, a stored token is used if it has more than 100 s left, and it is offered to
+  the Miniserver with `authwithtoken`. The validity is taken from the Miniserver's reply.
+- A missing, corrupt or foreign file means "no token". The same applies if the Miniserver
+  refuses the token, whether it answers with an error or closes the connection. Then the
+  password is used.
+- The file holds bearer material as good as the password. Keep it readable only by the
+  account that runs the program.
+
+## TLS
+
+`TlsOptions` selects how the server certificate is checked. Over `https://` and `wss://` only.
+
+| Setting | Accepts | Use for |
+|---|---|---|
+| default (`verify: true`) | A certificate that a public CA or the extra root signed, with the host name | Miniservers under a real name |
+| `extra_root_pem` | Same as default, plus your own root (for example the Loxone root) | Your own certificate authority |
+| `pinned_cert_sha256` | Only the certificate with this SHA-256 (DER). Chain and host name are not checked | A fixed, known certificate, for example a Miniserver by IP |
+| `trust_on_first_use: true` | The first certificate seen for a host name. Later ones must match | When you cannot get the fingerprint in advance |
+| `verify: false` | Anything | Only for tests; no protection against an attacker on the network |
+
+Notes:
+- The pin has priority over `trust_on_first_use`, which has priority over `verify`.
+- Trust on first use is remembered only for the life of the process. After a restart the
+  first contact counts again. An attacker who is on the network at that first contact gets
+  their certificate remembered. Use a pin if you can get the fingerprint some other way.
+- To read the fingerprint of a certificate:
+  `openssl s_client -connect HOST:PORT </dev/null 2>/dev/null | openssl x509 -outform DER | sha256sum`
 
 ## Security notes
 

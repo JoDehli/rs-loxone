@@ -99,6 +99,8 @@ async fn extra_root_makes_the_certificate_trusted() {
     let opts = TlsOptions {
         verify: true,
         extra_root_pem: Some(cert.pem.clone().into_bytes()),
+        pinned_cert_sha256: None,
+        trust_on_first_use: false,
     };
     let b = bootstrap(
         &format!("https://localhost:{}", addr.port()),
@@ -116,6 +118,8 @@ async fn verification_off_accepts_any_certificate() {
     let opts = TlsOptions {
         verify: false,
         extra_root_pem: None,
+        pinned_cert_sha256: None,
+        trust_on_first_use: false,
     };
     let b = bootstrap(
         &format!("https://localhost:{}", addr.port()),
@@ -136,6 +140,8 @@ async fn cloud_dns_name_with_local_ip_verifies_against_the_name() {
     let opts = TlsOptions {
         verify: true,
         extra_root_pem: Some(cert.pem.clone().into_bytes()),
+        pinned_cert_sha256: None,
+        trust_on_first_use: false,
     };
     let b = bootstrap(&format!("https://{name}"), opts, Some(addr));
     assert_eq!(b.structure_file().await.unwrap().bytes, b"{}");
@@ -150,6 +156,84 @@ async fn cloud_dns_name_without_trusted_root_is_rejected() {
         &format!("https://{name}"),
         TlsOptions::default(),
         Some(addr),
+    );
+    let err = b.structure_file().await.unwrap_err();
+    assert!(matches!(err, TransportError::Tls(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn pinned_fingerprint_accepts_only_that_certificate() {
+    use sha2::{Digest, Sha256};
+    let cert = test_cert();
+    let addr = spawn_tls_server(&cert);
+    let pin: [u8; 32] = Sha256::digest(cert.der.as_ref()).into();
+
+    // The right fingerprint: no CA is needed, the name is not checked.
+    let opts = TlsOptions {
+        pinned_cert_sha256: Some(pin),
+        ..TlsOptions::default()
+    };
+    let b = bootstrap(
+        &format!("https://localhost:{}", addr.port()),
+        opts,
+        Some(addr),
+    );
+    assert_eq!(b.structure_file().await.unwrap().bytes, b"{}");
+
+    // A different fingerprint: refused, even with verification off.
+    let wrong = TlsOptions {
+        pinned_cert_sha256: Some([0u8; 32]),
+        verify: false,
+        ..TlsOptions::default()
+    };
+    let b = bootstrap(
+        &format!("https://localhost:{}", addr.port()),
+        wrong,
+        Some(addr),
+    );
+    let err = b.structure_file().await.unwrap_err();
+    assert!(matches!(err, TransportError::Tls(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn first_use_remembers_the_certificate_and_refuses_a_changed_one() {
+    // Unique host names: the memory is per process and shared by all tests.
+    let host = "tofu-first-use.test";
+    let first = test_cert();
+    let first_addr = spawn_tls_server(&first);
+    let tofu = || TlsOptions {
+        trust_on_first_use: true,
+        ..TlsOptions::default()
+    };
+
+    let b = bootstrap(
+        &format!("https://{host}:{}", first_addr.port()),
+        tofu(),
+        Some(first_addr),
+    );
+    assert_eq!(
+        b.structure_file().await.unwrap().bytes,
+        b"{}",
+        "first contact"
+    );
+    let b = bootstrap(
+        &format!("https://{host}:{}", first_addr.port()),
+        tofu(),
+        Some(first_addr),
+    );
+    assert_eq!(
+        b.structure_file().await.unwrap().bytes,
+        b"{}",
+        "same certificate again"
+    );
+
+    // Another certificate under the same name: refused.
+    let other = test_cert();
+    let other_addr = spawn_tls_server(&other);
+    let b = bootstrap(
+        &format!("https://{host}:{}", other_addr.port()),
+        tofu(),
+        Some(other_addr),
     );
     let err = b.structure_file().await.unwrap_err();
     assert!(matches!(err, TransportError::Tls(_)), "{err:?}");

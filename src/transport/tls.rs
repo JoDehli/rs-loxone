@@ -28,6 +28,13 @@ pub struct TlsOptions {
     pub verify: bool,
     /// Extra trust root in PEM form, added to the public CAs.
     pub extra_root_pem: Option<Vec<u8>>,
+    /// SHA-256 of the server's certificate (DER). If set, only that certificate is accepted,
+    /// and the CA chain and the host name are not checked. Takes precedence over `verify`.
+    pub pinned_cert_sha256: Option<[u8; 32]>,
+    /// Trust on first use: the first certificate seen for a host name is remembered for the
+    /// life of the process, and a different one is refused afterwards. Nothing is stored on
+    /// disk, so a restart starts again with the first contact. Ignored if a pin is set.
+    pub trust_on_first_use: bool,
 }
 
 impl Default for TlsOptions {
@@ -35,6 +42,8 @@ impl Default for TlsOptions {
         Self {
             verify: true,
             extra_root_pem: None,
+            pinned_cert_sha256: None,
+            trust_on_first_use: false,
         }
     }
 }
@@ -44,6 +53,8 @@ impl fmt::Debug for TlsOptions {
         f.debug_struct("TlsOptions")
             .field("verify", &self.verify)
             .field("extra_root", &self.extra_root_pem.as_ref().map(|_| "<pem>"))
+            .field("pinned", &self.pinned_cert_sha256.is_some())
+            .field("trust_on_first_use", &self.trust_on_first_use)
             .finish()
     }
 }
@@ -55,7 +66,17 @@ pub fn client_config(opts: &TlsOptions) -> Result<Arc<ClientConfig>, TransportEr
         .with_safe_default_protocol_versions()
         .map_err(|e| TransportError::Tls(format!("protocol versions: {e}")))?;
 
-    let config = if opts.verify {
+    let config = if opts.pinned_cert_sha256.is_none() && opts.trust_on_first_use {
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(FirstUseVerify { provider }))
+            .with_no_client_auth()
+    } else if let Some(pin) = opts.pinned_cert_sha256 {
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PinVerify { provider, pin }))
+            .with_no_client_auth()
+    } else if opts.verify {
         let roots = root_store(opts)?;
         builder.with_root_certificates(roots).with_no_client_auth()
     } else {
@@ -132,6 +153,142 @@ fn split_ip_port(s: &str) -> Option<(&str, u16)> {
         return None;
     }
     Some((ip, port))
+}
+
+/// Accepts only the certificate whose DER SHA-256 equals `pin`. The chain and the host name
+/// are not checked; the signature of the handshake is still verified.
+#[derive(Debug)]
+struct PinVerify {
+    provider: Arc<CryptoProvider>,
+    pin: [u8; 32],
+}
+
+impl ServerCertVerifier for PinVerify {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        use sha2::{Digest, Sha256};
+        let digest: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
+        if digest == self.pin {
+            Ok(ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "server certificate does not match the pinned fingerprint".into(),
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Certificates remembered by trust on first use: (server name, SHA-256 of the DER).
+static FIRST_USE_PINS: std::sync::Mutex<Vec<(String, [u8; 32])>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Trust on first use. The first certificate for a server name is remembered in
+/// `FIRST_USE_PINS`; later connections to that name must present the same certificate.
+#[derive(Debug)]
+struct FirstUseVerify {
+    provider: Arc<CryptoProvider>,
+}
+
+impl ServerCertVerifier for FirstUseVerify {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        use sha2::{Digest, Sha256};
+        let digest: [u8; 32] = Sha256::digest(end_entity.as_ref()).into();
+        let name = server_name.to_str().to_string();
+        let mut pins = FIRST_USE_PINS
+            .lock()
+            .map_err(|_| rustls::Error::General("trust store poisoned".into()))?;
+        match pins.iter().find(|(n, _)| *n == name) {
+            None => {
+                pins.push((name, digest));
+                Ok(ServerCertVerified::assertion())
+            }
+            Some((_, known)) if *known == digest => Ok(ServerCertVerified::assertion()),
+            Some(_) => Err(rustls::Error::General(
+                "server certificate changed since it was first seen".into(),
+            )),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 /// Accepts any certificate. Used only when the caller sets `verify = false`.
@@ -277,6 +434,8 @@ mod tests {
         let opts = TlsOptions {
             verify: true,
             extra_root_pem: Some(b"junk".to_vec()),
+            pinned_cert_sha256: None,
+            trust_on_first_use: false,
         };
         assert!(root_store(&opts).is_err());
     }
@@ -287,7 +446,9 @@ mod tests {
         assert!(
             client_config(&TlsOptions {
                 verify: false,
-                extra_root_pem: None
+                extra_root_pem: None,
+                pinned_cert_sha256: None,
+                trust_on_first_use: false,
             })
             .is_ok()
         );
