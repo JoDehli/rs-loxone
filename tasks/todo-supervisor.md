@@ -11,14 +11,14 @@ Spec: `SPEC-supervisor.md` (freigegeben). Stand nach dieser Runde.
 ## Entschieden (Vorschläge aus der Spec übernommen)
 - Wiederholung ohne Obergrenze, nur bei Transportfehlern, bis `close()`.
 - Stabil = 60 s bestanden.
-- Warteschlange ohne Größenlimit in v1. Eine Längenwarnung fehlt noch (siehe offen).
+- Warteschlange ohne Größenlimit in v1; ab 1000 Befehlen gibt es eine Warnung.
 - `Reconnecting` pro Versuch einmal.
 - Token wird aus der beendeten Session übernommen (`session.token()`).
 
 ## Abweichungen und Lücken
 - **Zustellung ist höchstens einmal.** Ein Befehl, der beim Abbruch schon an den Schreiber übergeben war, kann verloren gehen, wird aber nie doppelt gesendet. Die Anforderung „Befehle nach dem Wiederverbinden senden“ gilt für Befehle, die während der Trennung ankommen. Der Test deckt genau diesen Fall ab.
-- **Fehlgeschlagene Befehle ohne Ablauf** (z. B. gesicherter Befehl mit falschem Code, Zeitüberschreitung) werden nur auf der Konsole gemeldet, nicht als Ereignis. Die Spec verlangt eine Meldung. Offen: welches Ereignis dafür?
-- **Längenwarnung der Warteschlange** im Supervisor fehlt (die Session hat sie für ihre Ereignisse).
+- [x] Fehlgeschlagene Befehle (z. B. gesicherter Befehl mit falschem Code) werden als `Event::CommandFailed { id, reason }` gemeldet, ohne Befehlstext. Test: `refused_secured_command_is_reported_without_its_code`.
+- [x] Längenwarnung der Warteschlange: ab 1000 wartenden Befehlen einmal eine Warnung, neu scharf nach dem Leeren. Test: `warns_once_when_the_queue_is_long`.
 - `Secret` löscht seinen Inhalt nicht beim Freigeben. Deshalb nutzt die Warteschlange `zeroize::Zeroizing` für den Visu-Code. Die Spec nennt das so.
 - Mock: neue Option `close_first_enables`, damit nur die ersten N Anmeldungen schließen.
 - Login-Ablehnung: jede Antwort mit Klasse `Rejected` beim Verbinden stoppt (401, 403, 423, 4003, 4006). Vorübergehende Fehler werden wiederholt.

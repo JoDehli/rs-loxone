@@ -247,6 +247,10 @@ fn describe(event: &Event, structure: &Structure, style: &Style) -> Vec<String> 
             "{now}  {}",
             style.bad(&format!("✖ command {id} dropped, {age:?} old"))
         )],
+        Event::CommandFailed { id, reason } => vec![format!(
+            "{now}  {}",
+            style.bad(&format!("✖ command {id} failed: {reason}"))
+        )],
         Event::Reconnecting {
             attempt,
             wait,

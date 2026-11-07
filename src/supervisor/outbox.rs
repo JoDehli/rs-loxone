@@ -55,11 +55,15 @@ pub struct Expired {
     pub age: Duration,
 }
 
+/// Queue length at which a warning is printed (once, until the queue is emptied).
+pub const WARN_AT: usize = 1000;
+
 /// Queue of commands, in the order they were sent by the caller.
 #[derive(Debug)]
 pub struct Outbox {
     entries: VecDeque<Queued>,
     max_age: Duration,
+    warned: bool,
 }
 
 impl Outbox {
@@ -68,6 +72,7 @@ impl Outbox {
         Self {
             entries: VecDeque::new(),
             max_age,
+            warned: false,
         }
     }
 
@@ -78,6 +83,13 @@ impl Outbox {
             queued_at: at,
             item,
         });
+        if !self.warned && self.entries.len() >= WARN_AT {
+            self.warned = true;
+            eprintln!(
+                "rs-loxone: {} commands are waiting for a connection",
+                self.entries.len()
+            );
+        }
     }
 
     /// Put entries back at the front, keeping their order. Used when a session could not
@@ -101,6 +113,7 @@ impl Outbox {
     /// Take every entry in order. Entries older than `max_age` at `now` are returned as
     /// expired instead of being sent.
     pub fn take(&mut self, now: Instant) -> (Vec<Queued>, Vec<Expired>) {
+        self.warned = false;
         let mut fresh = Vec::new();
         let mut expired = Vec::new();
         for entry in self.entries.drain(..) {
@@ -198,5 +211,17 @@ mod tests {
         assert_eq!(ob.len(), 1);
         let _ = ob.take(Instant::now());
         assert_eq!(ob.len(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn warns_once_when_the_queue_is_long() {
+        let mut ob = Outbox::new(Duration::from_secs(30));
+        let t0 = Instant::now();
+        for id in 1..=WARN_AT as u64 + 5 {
+            ob.push(id, cmd("x"), t0);
+        }
+        assert!(ob.warned);
+        let _ = ob.take(t0);
+        assert!(!ob.warned, "re-armed once the queue is emptied");
     }
 }

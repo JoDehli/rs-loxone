@@ -40,6 +40,9 @@ pub enum Event {
     /// A queued command was dropped because it was older than `max_command_age`.
     /// No command text is included (it may contain secrets).
     CommandDropped { id: u64, age: Duration },
+    /// A command was refused or failed when it was sent. The reason is the error text,
+    /// never the command itself (it may contain a visualization code).
+    CommandFailed { id: u64, reason: String },
     /// Token renewal failed too often; the session ends.
     AuthFailed { reason: String },
     /// Supervisor: waiting before connection attempt `attempt`. Not sent by a session.

@@ -232,3 +232,31 @@ async fn token_renewal_refused_after_password_login_gives_up() {
         "the retry used the password, not the token"
     );
 }
+
+#[tokio::test]
+async fn refused_secured_command_is_reported_without_its_code() {
+    let mock = start(MockConfig::default());
+    let (handle, mut rx) = run(config(&mock, PASSWORD));
+    let id = handle
+        .send(Item::Secured {
+            device_uuid: "5a5a5a5a-1111-2222-ffff403fb0c34b9e".into(),
+            value: "off".into(),
+            code: zeroize::Zeroizing::new("0000".into()),
+        })
+        .unwrap();
+
+    let seen = until(&mut rx, |e| matches!(e, Event::CommandFailed { .. })).await;
+    let failed = seen.last().unwrap();
+    match failed {
+        Event::CommandFailed {
+            id: failed_id,
+            reason,
+        } => {
+            assert_eq!(*failed_id, id);
+            assert!(reason.contains("visualization"), "{reason}");
+            assert!(!reason.contains("0000"), "the code must not appear");
+        }
+        other => panic!("expected CommandFailed, got {other:?}"),
+    }
+    handle.close();
+}

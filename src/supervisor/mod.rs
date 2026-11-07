@@ -248,7 +248,7 @@ impl Runner {
                 ctrl = self.control.recv() => match ctrl {
                     Some(Control::Send { id, item, at }) => {
                         let entry = Queued { id, queued_at: at, item };
-                        if !deliver(session, &entry).await {
+                        if !self.report(id, deliver(session, &entry).await) {
                             // The session is gone; keep the command for the next one.
                             self.outbox.requeue_front(vec![entry]);
                         }
@@ -270,12 +270,24 @@ impl Runner {
         }
         let mut rest = fresh.into_iter();
         while let Some(entry) = rest.next() {
-            if !deliver(session, &entry).await {
+            if !self.report(entry.id, deliver(session, &entry).await) {
                 let mut back = vec![entry];
                 back.extend(rest);
                 self.outbox.requeue_front(back);
                 return;
             }
+        }
+    }
+
+    /// Report a delivery result. Returns false if the command must stay queued.
+    fn report(&self, id: u64, delivery: Delivery) -> bool {
+        match delivery {
+            Delivery::Sent => true,
+            Delivery::Failed(reason) => {
+                self.emit(Event::CommandFailed { id, reason });
+                true
+            }
+            Delivery::Unsent => false,
         }
     }
 
@@ -310,7 +322,17 @@ impl Runner {
 
 /// Send one entry. `false` means the session could not take it (it is closing), so the
 /// caller keeps the entry.
-async fn deliver(session: &Session, entry: &Queued) -> bool {
+/// What happened to one command when it was handed to the session.
+enum Delivery {
+    /// Accepted by the session.
+    Sent,
+    /// The session answered with an error; the command is not retried.
+    Failed(String),
+    /// The session was closing; the command stays queued for the next one.
+    Unsent,
+}
+
+async fn deliver(session: &Session, entry: &Queued) -> Delivery {
     let result = match &entry.item {
         Item::Command(text) => session.send_command(text).await.map(|_| ()),
         Item::Secured {
@@ -324,15 +346,9 @@ async fn deliver(session: &Session, entry: &Queued) -> bool {
         }
     };
     match result {
-        Ok(()) => true,
-        Err(SessionError::Closed | SessionError::NotAuthenticated) => false,
-        Err(err) => {
-            eprintln!(
-                "rs-loxone: command {} failed and was not retried: {err}",
-                entry.id
-            );
-            true
-        }
+        Ok(()) => Delivery::Sent,
+        Err(SessionError::Closed | SessionError::NotAuthenticated) => Delivery::Unsent,
+        Err(err) => Delivery::Failed(err.to_string()),
     }
 }
 
