@@ -49,8 +49,8 @@ async fn preflight_values_from_the_real_miniserver() {
     let key = http.api_key().await.expect("apiKey");
     let api = http.api_config().await.expect("cfg/api");
     println!(
-        "apiKey: local={:?}, cfg/api: hasEventSlots={:?} local={:?}",
-        key.local, api.has_event_slots, api.local
+        "apiKey: local={:?}, cfg/api: hasEventSlots={:?}",
+        key.local, api.has_event_slots
     );
     assert_eq!(
         api.has_event_slots,

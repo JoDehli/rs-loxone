@@ -56,8 +56,6 @@ pub struct BootstrapConfig {
 pub struct ApiConfigInfo {
     /// `hasEventSlots`: false means no state subscription can be added right now.
     pub has_event_slots: Option<bool>,
-    /// `local`: whether the Miniserver regards this connection as local.
-    pub local: Option<bool>,
 }
 
 /// The `apiKey` reply.
@@ -134,7 +132,6 @@ impl HttpBootstrap {
             .ok_or_else(|| TransportError::Protocol("cfg/api value is not an object".into()))?;
         Ok(ApiConfigInfo {
             has_event_slots: obj.get("hasEventSlots").and_then(Value::as_bool),
-            local: obj.get("local").and_then(Value::as_bool),
         })
     }
 
