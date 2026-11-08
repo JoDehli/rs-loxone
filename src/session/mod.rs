@@ -342,6 +342,19 @@ impl Session {
     /// Close the session. Sends a close frame, delivers `Disconnected { Requested }` to the
     /// callbacks, and waits (at most [`CLOSE_TIMEOUT`] per task) until the background tasks
     /// have ended. Returns after the last event has been handled.
+    /// Revoke the token this session uses (`killtoken`), then end the session. Afterwards the
+    /// Miniserver refuses that token (401 on `authwithtoken`). The command is encrypted, the
+    /// token goes in plain text, as the Miniserver expects. It gets no reply.
+    pub async fn kill_token(self) -> Result<(), SessionError> {
+        let command =
+            crate::auth::commands::kill_token(self.token().token().expose(), &self.username);
+        self.send_command(&command).await?;
+        // The writer sends the command in its own task. Give it time before the close.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        self.close().await;
+        Ok(())
+    }
+
     pub async fn close(self) {
         self.shared.stop(DisconnectReason::Requested);
         let Tasks {

@@ -89,6 +89,16 @@ pub fn check_token(token: &str, user: &str) -> String {
     )
 }
 
+/// `killtoken/<token>/<user>`: revoke a token. Takes the plain token and the user name; both
+/// segments are required (without the user name the Miniserver answers 400). No reply comes back.
+pub fn kill_token(token: &str, user: &str) -> String {
+    format!(
+        "jdev/sys/killtoken/{}/{}",
+        encode_user(token),
+        encode_user(user)
+    )
+}
+
 /// `jdev/sys/getvisusalt/<user>`: fetch the visualization-password key and salt.
 pub fn get_visu_salt(user: &str) -> String {
     format!("jdev/sys/getvisusalt/{}", encode_user(user))
@@ -172,6 +182,11 @@ mod tests {
         assert_eq!(
             check_token("eyJ.a-b_c", "admin"),
             "jdev/sys/checktoken/eyJ.a-b_c/admin"
+        );
+        // Both segments are required: without the user name the Miniserver answers 400.
+        assert_eq!(
+            kill_token("eyJ.a-b_c", "admin"),
+            "jdev/sys/killtoken/eyJ.a-b_c/admin"
         );
     }
 

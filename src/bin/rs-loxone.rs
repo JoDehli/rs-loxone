@@ -19,7 +19,7 @@ use std::time::Duration;
 use rs_loxone::auth::Secret;
 use rs_loxone::auth::store::TokenFile;
 use rs_loxone::protocol::Uuid;
-use rs_loxone::session::{AsyncHandler, Event, SessionConfig};
+use rs_loxone::session::{AsyncHandler, Event, Session, SessionConfig};
 use rs_loxone::structure::Structure;
 use rs_loxone::supervisor;
 use rs_loxone::transport::TransportError;
@@ -290,6 +290,35 @@ fn describe(event: &Event, structure: &Structure, style: &Style) -> Vec<String> 
     }
 }
 
+/// Log in, revoke the token this session uses (`killtoken`), and delete the token file, so
+/// that no revoked token is left behind. Only with `LOX_KILL_TOKEN=1`.
+async fn kill_current_token(cfg: SessionConfig) {
+    let session = match Session::connect(cfg, AsyncHandler(|_event: Event| async {})).await {
+        Ok(session) => session,
+        Err(err) => {
+            eprintln!("cannot log in, so no token was killed: {err}");
+            return;
+        }
+    };
+    match session.kill_token().await {
+        Ok(()) => println!("token killed on the Miniserver"),
+        Err(err) => {
+            eprintln!("killtoken failed: {err}");
+            return;
+        }
+    }
+    if let Some(path) = std::env::var_os("LOX_TOKEN_FILE") {
+        match std::fs::remove_file(&path) {
+            Ok(()) => println!(
+                "token file removed: {}",
+                std::path::Path::new(&path).display()
+            ),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => eprintln!("could not remove the token file: {err}"),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     println!("rs-loxone connection test");
@@ -301,6 +330,9 @@ async fn main() {
         println!("  USER  user name (asked for if missing)");
         println!("  LOX_PASS  password, to skip the prompt");
         println!("  LOX_TOKEN_FILE  keep the token in this file between runs");
+        println!(
+            "  LOX_KILL_TOKEN=1  log in, revoke the current token on the Miniserver, remove the token file, exit"
+        );
         println!(
             "  LOX_TLS_PIN  SHA-256 of the certificate (hex), for https; only this certificate is accepted"
         );
@@ -419,6 +451,10 @@ async fn main() {
     if let Some(path) = std::env::var_os("LOX_TOKEN_FILE") {
         println!("token file: {}", std::path::Path::new(&path).display());
         cfg.token_file = Some(TokenFile::new(path));
+    }
+    if std::env::var("LOX_KILL_TOKEN").is_ok_and(|v| v == "1") {
+        kill_current_token(cfg).await;
+        return;
     }
     let structure_for_events = structure.clone();
     let style = Style::new();

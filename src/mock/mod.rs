@@ -608,6 +608,13 @@ fn inner_command(cmd: &str, s: &mut State, cfg: &MockConfig) -> Vec<Out> {
     };
     s.seen.push(name);
 
+    // Like the device: the token is revoked and no reply comes back.
+    if let Some(rest) = cmd.strip_prefix("jdev/sys/killtoken/") {
+        let plain = rest.split('/').next().unwrap_or("");
+        s.tokens.retain(|t| t != plain);
+        return vec![];
+    }
+
     if let Some(user) = cmd.strip_prefix("jdev/sys/getkey2/") {
         if user != cfg.user {
             return vec![Out::Text(ll(cmd, 401, json!("")))];
