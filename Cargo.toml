@@ -4,15 +4,14 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Low-level async client for the Loxone Miniserver: login, state updates, commands, reconnects."
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/JoDehli/rs-loxone"
 readme = "README.md"
 include = [
     "/Cargo.toml",
     "/Cargo.lock",
     "/README.md",
-    "/LICENSE-MIT",
-    "/LICENSE-APACHE",
+    "/LICENSE",
     "/src/**",
     "/tests/**",
 ]

@@ -299,3 +299,9 @@ src/discover.rs  network discovery
 src/bin/         the rs-loxone program
 src/mock/        a scripted fake Miniserver for tests (feature `mock`)
 ```
+
+## License
+
+Copyright (C) 2026 JoDehli. Licensed under the GNU Affero General Public License, version 3 only
+(see `LICENSE`). If you run a modified version as a network service, you must offer its source to
+the users of that service.
